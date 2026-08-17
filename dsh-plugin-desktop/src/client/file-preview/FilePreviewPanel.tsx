@@ -155,17 +155,17 @@ export function FilePreviewPanel({ snapshot, registry, onRefresh, onClose, onOpe
         <div className="dshDesktopFileActions">
           <Tooltip label="刷新" side="bottom">
             <button type="button" className="dshDesktopIconButton" aria-label="刷新" onClick={onRefresh}>
-              <IconRefreshOutline16 />
+              <IconRefreshOutline16 size={14} />
             </button>
           </Tooltip>
           <Tooltip label="系统打开" side="bottom">
             <button type="button" className="dshDesktopIconButton" aria-label="系统打开" onClick={openExternally}>
-              <IconRightUpOutline16 />
+              <IconRightUpOutline16 size={14} />
             </button>
           </Tooltip>
           <Tooltip label="关闭" side="bottom">
             <button type="button" className="dshDesktopIconButton" aria-label="关闭" onClick={onClose}>
-              <IconCloseOutline16 />
+              <IconCloseOutline16 size={14} />
             </button>
           </Tooltip>
         </div>

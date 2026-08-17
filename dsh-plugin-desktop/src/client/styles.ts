@@ -48,7 +48,7 @@ html:has([aria-modal="true"]) .dshDesktopSidebarSurface::before { -webkit-app-re
 .dshDesktopFileTitle { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--dsw-alias-label-primary); }
 .dshDesktopFilePath { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; color: var(--dsw-alias-label-tertiary); font-size: 12px; margin-top: 2px; }
 .dshDesktopFileActions { flex: 0 0 auto; display: flex; gap: 8px; margin-left: auto; }
-.dshDesktopIconButton { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: none; border-radius: 50%; background: transparent; color: var(--dsw-alias-label-secondary); cursor: pointer; }
+.dshDesktopIconButton { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: none; border-radius: 50%; background: transparent; color: var(--dsw-alias-label-secondary); cursor: pointer; }
 .dshDesktopIconButton:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 .dshDesktopFileContent { flex: 1 1 auto; min-height: 0; min-width: 0; max-width: 100%; overflow: auto; }
 .dshDesktopScrollSurface { height: 100%; min-height: 0; min-width: 0; max-width: 100%; overflow: auto; }
@@ -70,7 +70,7 @@ html:has([aria-modal="true"]) .dshDesktopSidebarSurface::before { -webkit-app-re
 .dshDesktopSourceToggle { border: 1px solid var(--dsw-alias-border-l2); background: transparent; color: var(--dsw-alias-label-secondary); border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 13px; }
 .dshDesktopSourceToggle:hover, .dshDesktopSourceToggle[aria-pressed="true"] { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 .dshDesktopSourceBody { flex: 1 1 auto; min-height: 0; min-width: 0; max-width: 100%; overflow: auto; }
-.dshDesktopSourcePlain { box-sizing: border-box; margin: 0; padding: 12px; min-height: 100%; min-width: 0; max-width: 100%; white-space: pre; overflow: auto; font-family: var(--dsw-font-mono, monospace); font-size: 13px; line-height: 1.5; color: var(--dsw-alias-label-primary); background: transparent; }
+.dshDesktopSourcePlain { box-sizing: border-box; margin: 0; padding: 12px; min-height: 100%; min-width: 0; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; font-family: var(--dsw-font-mono, monospace); font-size: 13px; line-height: 1.5; color: var(--dsw-alias-label-primary); background: transparent; }
 .dshDesktopMarkdownView, .dshDesktopJsonView { box-sizing: border-box; height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .dshDesktopSegmentedControl { flex: 0 0 auto; display: inline-flex; gap: 2px; margin: 8px 12px; padding: 2px; border-radius: 8px; background: var(--dsw-alias-interactive-bg-hover); width: fit-content; }
 .dshDesktopSegmentedControl button { border: none; background: transparent; color: var(--dsw-alias-label-secondary); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }

@@ -223,7 +223,7 @@ Coordinator 维护 `closed | details | file` 判别状态：
 - 根据扩展名、特殊文件名和 shebang 选择语言。
 - 默认文本读取上限为 2 MiB，由 Host Config 显式配置。
 - Shiki 高亮上限为 512 KiB 或 10,000 行；超过后降级到普通只读文本，避免主线程长时间阻塞。
-- Source 始终不换行（`white-space: pre` + 横向滚动）；Source Provider 通过 Adapter 隔离 Shiki 调用，使 Controller 和文件协议不依赖具体高亮 API。
+- 降级后的普通文本自适应换行（`white-space: pre-wrap`），随面板宽度重排、无换行开关；ReadBlock 高亮路径保留横向滚动。Source Provider 通过 Adapter 隔离 Shiki 调用，使 Controller 和文件协议不依赖具体高亮 API。
 
 ### 8.2 Markdown Provider
 
@@ -254,7 +254,7 @@ Coordinator 维护 `closed | details | file` 判别状态：
 - 右侧使用图标按钮：刷新、系统打开、关闭，均提供 Tooltip 和 `aria-label`。
 - 内容区占据剩余高度，并拥有稳定的独立滚动容器。
 - Markdown 和 JSON 的模式切换使用分段控件。
-- Source 始终不换行；缩放等数值行为使用明确的图标或步进控件。
+- 源码、文本和 JSON 源码内容自适应换行，随面板宽度重排；ReadBlock 高亮路径保留横向滚动；缩放等数值行为使用明确的图标或步进控件。
 - loading、ready、error 和 oversized 都有稳定布局，异步内容不能改变列宽。
 - 同一路径再次点击也重新读取，以便显示 Agent 刚完成的修改。
 - 读取错误留在右栏中呈现，不静默改为系统打开。
@@ -398,7 +398,7 @@ dsh-plugin-desktop/src/
 | `src/client/file-preview/open-path-decorator.ts` | 实现 `WorkspacesOpenPathDecorator`；先捕获系统 opener，再安装 wrapper；读取调用时的 current session，按 `handled/delegate` 决定是否调用原方法。 |
 | `src/client/file-preview/registry.ts` | 声明 `FilePreviewProvider`、`FilePreviewLoadMode` 和 `FilePreviewRegistry`；处理排名、稳定顺序、重复 id 与 registration disposer。 |
 | `src/client/file-preview/FilePreviewPanel.tsx` | 只接收 snapshot 与普通 callback；渲染 Header、状态、Provider、Tooltip、错误边界和显式系统打开反馈。 |
-| `src/client/file-preview/providers/SourcePreview.tsx` | 将 descriptor 与文本转换为 `ReadBlock` 输入；实现高亮门限与普通文本降级，Source 始终不换行。 |
+| `src/client/file-preview/providers/SourcePreview.tsx` | 将 descriptor 与文本转换为 `ReadBlock` 输入；实现高亮门限与普通文本降级，降级文本自适应换行，高亮路径保留横向滚动。 |
 | `src/client/file-preview/providers/MarkdownPreview.tsx` | 使用 `MarkdownText` 和 Source view 实现 `预览/源码`。 |
 | `src/client/file-preview/providers/JsonPreview.tsx` | 使用 `JsonTree` 和 Source view 实现 `树/源码`，容纳解析失败与 JSON scalar。 |
 | `src/client/file-preview/providers/ImagePreview.tsx` | 使用 token URL 的 `<img>`，实现适应窗口、原始比例和缩放步进。 |
