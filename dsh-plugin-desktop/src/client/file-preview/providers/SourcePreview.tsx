@@ -1,10 +1,10 @@
 /**
  * Source-file preview provider (design §8.1, §16.8). Below the syntax-highlight
  * ceiling it renders DSH's `ReadBlock` with every line shown; above it a single
- * plain `<pre>` text node avoids building per-line DOM. Source always renders
- * non-wrapping (`white-space: pre`) with horizontal scrolling, and copy writes
- * the original text. The provider carries no branch over formats — the registry
- * decides whether it matches.
+ * plain `<pre>` text node avoids building per-line DOM. The upstream `ReadBlock`
+ * defaults to non-wrapping; the Desktop file viewer enables soft wrapping through
+ * the scoped `dshDesktopSourceReadBlock` class. Copy writes the original text. The
+ * provider carries no branch over formats — the registry decides whether it matches.
  * @module dsh-plugin-desktop/client/file-preview/providers/source-preview
  */
 
@@ -64,6 +64,7 @@ export function SourceView({ descriptor, content }: FilePreviewRendererProps): R
         ? (
           <div className="dshDesktopSourceBody">
             <ReadBlock
+              className="dshDesktopSourceReadBlock"
               label={descriptor.name}
               lang={descriptor.language}
               lines={lines}

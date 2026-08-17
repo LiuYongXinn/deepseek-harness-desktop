@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { act } from 'react-dom/test-utils'
@@ -13,6 +13,7 @@ import { FilePreviewPanel } from '../src/client/file-preview/FilePreviewPanel.ts
 import { ImageView } from '../src/client/file-preview/providers/ImagePreview.tsx'
 import { MarkdownView } from '../src/client/file-preview/providers/MarkdownPreview.tsx'
 import { JsonView } from '../src/client/file-preview/providers/JsonPreview.tsx'
+import { SourceView } from '../src/client/file-preview/providers/SourcePreview.tsx'
 
 const RID: FilePreviewResourceId = brandResourceId('rid-1')
 
@@ -82,6 +83,9 @@ function mount(panel: ReactNode) {
   const root = createRoot(container)
   act(() => { root.render(panel) })
   const text = () => container.textContent ?? ''
+  const rerender = (nextPanel: ReactNode): void => {
+    act(() => { root.render(nextPanel) })
+  }
   const click = (selector: string): void => {
     const el = container.querySelector(selector)
     act(() => { el?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })) })
@@ -90,7 +94,7 @@ function mount(panel: ReactNode) {
     act(() => { root.unmount() })
     container.remove()
   }
-  return { container, text, click, cleanup }
+  return { container, text, rerender, click, cleanup }
 }
 
 /** A trivial provider component that echoes an identifiable marker. */
@@ -171,6 +175,49 @@ describe('file-preview-panel (client)', () => {
     )
     expect(container.querySelector('[data-marker="plain-render"]')).toBeDefined()
     expect(text()).toContain('file.ts')
+    cleanup()
+  })
+
+  it('soft-wraps highlighted source without changing logical lines or copied text', async () => {
+    const lines = [
+      'export function greet({ name, excited = false }: GreetingOptions): string {',
+      '  return excited ? `Hello, ${name}!` : `Hello, ${name}.`',
+      '}',
+      'https://example.test/a-very-long-path-without-natural-break-points/abcdefghijklmnopqrstuvwxyz0123456789',
+    ]
+    const sourceText = lines.join('\n')
+    const snapshot: FilePreviewSnapshot = {
+      status: 'ready', sessionId: 's', path: '/w/file.ts',
+      descriptor: { ...textDescriptor(), size: sourceText.length, language: 'typescript' },
+      providerId: 'desktop.source', content: { kind: 'text', text: sourceText },
+    }
+    const callbacks = fakeCallbacks().props
+    const registry = makeRegistry(provider('desktop.source', SourceView))
+    const panel = <FilePreviewPanel snapshot={snapshot} registry={registry} {...callbacks} />
+    const { container, rerender, cleanup } = mount(panel)
+
+    const readBlock = container.querySelector<HTMLElement>('[data-read]')
+    expect(readBlock).not.toBeNull()
+    expect(container.querySelector('.dshDesktopSourcePlain')).toBeNull()
+    expect(readBlock?.classList.contains('dshDesktopSourceReadBlock')).toBe(true)
+    expect(container.querySelectorAll('[data-read] span[aria-hidden="true"]')).toHaveLength(lines.length)
+
+    const contentSpans = readBlock?.querySelectorAll<HTMLElement>(':scope > div:last-child > div > span:last-child') ?? []
+    expect(contentSpans).toHaveLength(lines.length)
+    expect(contentSpans[0]?.textContent).toContain(lines[0])
+    expect(contentSpans[3]?.textContent).toContain(lines[3])
+
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    ;(navigator as any).clipboard = { writeText }
+    const copyButton = readBlock?.querySelector('button')
+    expect(copyButton).not.toBeNull()
+    await act(async () => {
+      copyButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(writeText).toHaveBeenCalledWith(sourceText)
+
+    rerender(panel)
+    expect(container.querySelector('[data-read]')?.classList.contains('dshDesktopSourceReadBlock')).toBe(true)
     cleanup()
   })
 
