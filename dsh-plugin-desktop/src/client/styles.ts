@@ -47,11 +47,11 @@ html:has([aria-modal="true"]) .dshDesktopSidebarSurface::before { -webkit-app-re
 .dshDesktopFileHeader { flex: 0 0 auto; padding: 10px 12px 8px; border-bottom: 1px solid var(--dsw-alias-border-l1); display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
 .dshDesktopFileTitle { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--dsw-alias-label-primary); }
 .dshDesktopFilePath { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; color: var(--dsw-alias-label-tertiary); font-size: 12px; margin-top: 2px; }
-.dshDesktopFileActions { flex: 0 0 auto; display: flex; gap: 2px; margin-left: auto; }
-.dshDesktopIconButton { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: none; border-radius: 6px; background: transparent; color: var(--dsw-alias-label-secondary); cursor: pointer; }
+.dshDesktopFileActions { flex: 0 0 auto; display: flex; gap: 8px; margin-left: auto; }
+.dshDesktopIconButton { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: none; border-radius: 50%; background: transparent; color: var(--dsw-alias-label-secondary); cursor: pointer; }
 .dshDesktopIconButton:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
-.dshDesktopFileContent { flex: 1 1 auto; min-height: 0; overflow: auto; }
-.dshDesktopScrollSurface { height: 100%; min-height: 0; overflow: auto; }
+.dshDesktopFileContent { flex: 1 1 auto; min-height: 0; min-width: 0; max-width: 100%; overflow: auto; }
+.dshDesktopScrollSurface { height: 100%; min-height: 0; min-width: 0; max-width: 100%; overflow: auto; }
 .dshDesktopFileStatus { box-sizing: border-box; height: 100%; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; color: var(--dsw-alias-label-secondary); text-align: center; }
 .dshDesktopFileStatus.error { color: var(--dsw-alias-state-error-primary); }
 .dshDesktopFileSpinner { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--dsw-alias-border-l2); border-top-color: var(--dsw-alias-state-business-primary); animation: dshDesktopSpin 0.8s linear infinite; }
@@ -69,9 +69,8 @@ html:has([aria-modal="true"]) .dshDesktopSidebarSurface::before { -webkit-app-re
 .dshDesktopSourceToolbar { flex: 0 0 auto; display: flex; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--dsw-alias-border-l1); }
 .dshDesktopSourceToggle { border: 1px solid var(--dsw-alias-border-l2); background: transparent; color: var(--dsw-alias-label-secondary); border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 13px; }
 .dshDesktopSourceToggle:hover, .dshDesktopSourceToggle[aria-pressed="true"] { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
-.dshDesktopSourceWrapped, .dshDesktopSourceBody { flex: 1 1 auto; min-height: 0; overflow: auto; }
-.dshDesktopSourcePlain { box-sizing: border-box; margin: 0; padding: 12px; min-height: 100%; white-space: pre; overflow: auto; font-family: var(--dsw-font-mono, monospace); font-size: 13px; line-height: 1.5; color: var(--dsw-alias-label-primary); background: transparent; }
-.dshDesktopSourcePlain[data-wrapped="true"] { white-space: pre-wrap; word-break: break-word; }
+.dshDesktopSourceBody { flex: 1 1 auto; min-height: 0; min-width: 0; max-width: 100%; overflow: auto; }
+.dshDesktopSourcePlain { box-sizing: border-box; margin: 0; padding: 12px; min-height: 100%; min-width: 0; max-width: 100%; white-space: pre; overflow: auto; font-family: var(--dsw-font-mono, monospace); font-size: 13px; line-height: 1.5; color: var(--dsw-alias-label-primary); background: transparent; }
 .dshDesktopMarkdownView, .dshDesktopJsonView { box-sizing: border-box; height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .dshDesktopSegmentedControl { flex: 0 0 auto; display: inline-flex; gap: 2px; margin: 8px 12px; padding: 2px; border-radius: 8px; background: var(--dsw-alias-interactive-bg-hover); width: fit-content; }
 .dshDesktopSegmentedControl button { border: none; background: transparent; color: var(--dsw-alias-label-secondary); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }

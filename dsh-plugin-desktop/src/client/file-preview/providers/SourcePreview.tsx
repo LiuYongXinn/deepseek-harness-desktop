@@ -1,9 +1,10 @@
 /**
  * Source-file preview provider (design §8.1, §16.8). Below the syntax-highlight
  * ceiling it renders DSH's `ReadBlock` with every line shown; above it a single
- * plain `<pre>` text node avoids building per-line DOM. A wrap toggle changes
- * only the display; copy always writes the original text. The provider carries
- * no branch over formats — the registry decides whether it matches.
+ * plain `<pre>` text node avoids building per-line DOM. Source always renders
+ * non-wrapping (`white-space: pre`) with horizontal scrolling, and copy writes
+ * the original text. The provider carries no branch over formats — the registry
+ * decides whether it matches.
  * @module dsh-plugin-desktop/client/file-preview/providers/source-preview
  */
 
@@ -38,7 +39,6 @@ export function SourceView({ descriptor, content }: FilePreviewRendererProps): R
   if (content.kind !== 'text') {
     throw new Error('source provider requires text content')
   }
-  const [wrapped, setWrapped] = useState(false)
   const [copied, setCopied] = useState(false)
   const canHighlight = useMemo(
     () => byteLength(content.text) <= HIGHLIGHT_MAX_BYTES && content.text.split('\n').length <= HIGHLIGHT_MAX_LINES,
@@ -54,14 +54,6 @@ export function SourceView({ descriptor, content }: FilePreviewRendererProps): R
   return (
     <div className="dshDesktopSourceView">
       <div className="dshDesktopSourceToolbar">
-        <button
-          type="button"
-          className="dshDesktopSourceToggle"
-          onClick={() => { setWrapped(value => !value) }}
-          aria-pressed={wrapped}
-        >
-          {wrapped ? '不换行' : '换行'}
-        </button>
         {!canHighlight && (
           <button type="button" className="dshDesktopSourceToggle" onClick={onCopy}>
             {copied ? '复制成功' : '复制'}
@@ -70,7 +62,7 @@ export function SourceView({ descriptor, content }: FilePreviewRendererProps): R
       </div>
       {canHighlight
         ? (
-          <div className={wrapped ? 'dshDesktopSourceWrapped' : 'dshDesktopSourceBody'}>
+          <div className="dshDesktopSourceBody">
             <ReadBlock
               label={descriptor.name}
               lang={descriptor.language}
@@ -81,7 +73,7 @@ export function SourceView({ descriptor, content }: FilePreviewRendererProps): R
           </div>
         )
         : (
-          <pre className="dshDesktopSourcePlain" data-wrapped={wrapped ? 'true' : undefined}>
+          <pre className="dshDesktopSourcePlain">
             {content.text}
           </pre>
         )}
