@@ -3,6 +3,7 @@
 import {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
   Menu,
   nativeImage,
@@ -19,6 +20,7 @@ import { fileURLToPath } from 'node:url'
 import { desktopTerminalStateDirectory, openDesktopTerminal } from './desktop-terminal.ts'
 import { packagedDependencyPath } from './packaged-runtime-path.ts'
 import type {
+  DesktopClipboardSnapshot,
   DesktopNotification,
   DesktopPlatform,
   DesktopRuntime,
@@ -215,6 +217,19 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
   /** @inheritdoc */
   prepareToQuit(): void {
     this.quitting = true
+  }
+
+  /** @inheritdoc */
+  readNativeClipboardSnapshot(): DesktopClipboardSnapshot {
+    return {
+      formats: clipboard.availableFormats(),
+      readText: () => clipboard.readText(),
+      read: format => clipboard.read(format),
+      readBuffer: format => {
+        const buffer = clipboard.readBuffer(format)
+        return buffer.length === 0 ? undefined : new Uint8Array(buffer)
+      },
+    }
   }
 
   private contributedTrayItems(group: DesktopTrayItemGroup): Electron.MenuItemConstructorOptions[] {

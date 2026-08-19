@@ -133,6 +133,24 @@ export interface DesktopShellSpec extends DesktopWindowConfig {
   requestModeChange(mode: DesktopShellMode): Promise<void>
 }
 
+/**
+ * A narrow, immutable view of the native clipboard captured exactly once for a
+ * single user-paste RPC. The Host reads the snapshot synchronously inside that
+ * one RPC and never polls or caches clipboard state, so the snapshot's lifetime
+ * is bounded to a single probe call and its underlying absolute paths never
+ * cross an RPC boundary.
+ */
+export interface DesktopClipboardSnapshot {
+  /** Native clipboard format identifiers currently available. */
+  readonly formats: readonly string[]
+  /** Read the plain-text representation of the clipboard. */
+  readText(): string
+  /** Read a named string format, or `''` when the format is not a string. */
+  read(format: string): string
+  /** Read a named binary format, or `undefined` when empty or not a buffer. */
+  readBuffer(format: string): Uint8Array | undefined
+}
+
 /** Electron bootstrap capability supplied before the profile tree mounts. */
 export interface DesktopRuntime {
   /** Current Electron platform. */
@@ -177,6 +195,15 @@ export interface DesktopRuntime {
 
   /** Allow the final native quit after the Cordis tree has disposed. */
   prepareToQuit(): void
+
+  /**
+   * Synchronously read the current native clipboard once, for a single
+   * user-paste RPC. The Host never polls or caches the clipboard: each call
+   * captures one immutable snapshot whose absolute paths are used only inside
+   * the matching probe RPC and never cross an RPC boundary.
+   * @returns a snapshot of the clipboard formats and their current values.
+   */
+  readNativeClipboardSnapshot(): DesktopClipboardSnapshot
 }
 
 declare module '@deepseek-ai/cordis' {

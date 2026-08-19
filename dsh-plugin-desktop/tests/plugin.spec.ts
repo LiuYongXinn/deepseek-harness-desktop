@@ -85,6 +85,12 @@ function createHarness(platform: DesktopRuntime['platform'] = 'darwin'): PluginH
     setThemeSource,
     requestRestart: restart,
     prepareToQuit: () => {},
+    readNativeClipboardSnapshot: () => ({
+      formats: [],
+      readText: () => '',
+      read: () => '',
+      readBuffer: () => undefined,
+    }),
   }
   const settings = {
     get: vi.fn((namespace: unknown) => String(namespace) === 'ui-theme'

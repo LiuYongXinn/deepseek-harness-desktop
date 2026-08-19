@@ -71,6 +71,12 @@ const electron = vi.hoisted(() => {
     setWindowOpenHandler: vi.fn(),
   }
   const nativeTheme = { themeSource: 'system' }
+  const clipboard = {
+    availableFormats: vi.fn(() => ['text/plain']),
+    readText: vi.fn(() => 'hello'),
+    read: vi.fn((_f: string) => 'x'),
+    readBuffer: vi.fn((_f: string) => Buffer.alloc(0)),
+  }
 
   class BrowserWindow {
     readonly webContents = webContents
@@ -144,6 +150,7 @@ const electron = vi.hoisted(() => {
     browserWindows,
     browserWindowOff,
     browserWindowOn,
+    clipboard,
     loadURL,
     dialog,
     Menu: {
@@ -171,6 +178,7 @@ const electron = vi.hoisted(() => {
 vi.mock('electron', () => ({
   app: electron.app,
   BrowserWindow: electron.BrowserWindow,
+  clipboard: electron.clipboard,
   dialog: electron.dialog,
   Menu: electron.Menu,
   nativeImage: electron.nativeImage,
@@ -216,6 +224,10 @@ describe('Electron compatibility runtime', () => {
     electron.dialog.showMessageBox.mockResolvedValue({ response: 0, checkboxChecked: false })
     electron.shell.openPath.mockResolvedValue('')
     electron.nativeTheme.themeSource = 'system'
+    electron.clipboard.availableFormats.mockReturnValue(['text/plain'])
+    electron.clipboard.readText.mockReturnValue('hello')
+    electron.clipboard.read.mockReturnValue('x')
+    electron.clipboard.readBuffer.mockReturnValue(Buffer.alloc(0))
   })
 
   afterEach(() => {
@@ -735,5 +747,44 @@ describe('Electron compatibility runtime', () => {
     expect(electron.nativeTheme.themeSource).toBe('dark')
     await expect(release()).rejects.toThrow('renderer unavailable')
     expect(electron.nativeTheme.themeSource).toBe('light')
+  })
+})
+
+describe('Electron clipboard snapshot', () => {
+  async function snapshot() {
+    const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')
+    return new ElectronDesktopRuntime(async () => {}).readNativeClipboardSnapshot()
+  }
+
+  it('returns availableFormats as the snapshot format list', async () => {
+    electron.clipboard.availableFormats.mockReturnValue(['text/plain', 'CF_HDROP'])
+    const snap = await snapshot()
+    expect(snap.formats).toEqual(['text/plain', 'CF_HDROP'])
+  })
+
+  it('delegates readText, read, and readBuffer to the native clipboard', async () => {
+    const snap = await snapshot()
+    expect(snap.readText()).toBe('hello')
+    expect(snap.read('FileNameW')).toBe('x')
+    expect(snap.readBuffer('CF_HDROP')).toBeUndefined()
+
+    expect(electron.clipboard.readText).toHaveBeenCalledOnce()
+    expect(electron.clipboard.read).toHaveBeenCalledWith('FileNameW')
+    expect(electron.clipboard.readBuffer).toHaveBeenCalledWith('CF_HDROP')
+  })
+
+  it('maps an empty native buffer to undefined', async () => {
+    electron.clipboard.readBuffer.mockReturnValue(Buffer.alloc(0))
+    const snap = await snapshot()
+    expect(snap.readBuffer('CF_HDROP')).toBeUndefined()
+  })
+
+  it('maps a non-empty native buffer to a Uint8Array', async () => {
+    electron.clipboard.readBuffer.mockReturnValue(Buffer.from([1, 2]))
+    const snap = await snapshot()
+    const bytes = snap.readBuffer('CF_HDROP')
+    expect(bytes).toBeInstanceOf(Uint8Array)
+    expect(bytes?.length).toBe(2)
+    expect(Array.from(bytes ?? [])).toEqual([1, 2])
   })
 })

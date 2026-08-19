@@ -42,6 +42,15 @@ import {
   classifyFileName,
   type FilePreviewFormatDefinition,
 } from './file-preview-formats.ts'
+import {
+  resolveWorkspaceMembership,
+  type WorkspaceAuthLogger,
+  type TraceSession,
+  type WorkspaceMembership,
+} from './workspace-file-auth.ts'
+// Re-export the shared membership type so external importers of this module
+// (src/index.ts and the gateway spec) keep resolving it from here.
+export type { WorkspaceMembership } from './workspace-file-auth.ts'
 
 /** Opaque FsTarget/version values collected read-only from the fs seam. */
 export interface FilePreviewFsTarget {
@@ -83,21 +92,8 @@ export interface FilePreviewFsSeam {
 }
 
 /** Minimal logger surface the gateway writes diagnostics to. */
-export interface FilePreviewLogger {
-  warn(message: unknown, ...args: unknown[]): void
+export interface FilePreviewLogger extends WorkspaceAuthLogger {
   error(message: unknown, ...args: unknown[]): void
-}
-
-/** One workspace membership entry the gateway reads from the registry. */
-export interface WorkspaceMembership {
-  path: string
-  sessionIds: readonly string[]
-}
-
-/** Narrow lineage shape the gateway needs for subagent workspace resolution. */
-export interface FilePreviewLineageTrace {
-  target: { header: { origin?: 'subagent'; parentSession?: string } }
-  ancestors: readonly { header: { parentSession?: string; id: string } }[]
 }
 
 /** Validated configuration the gateway reads; never defaulted inside a method. */
@@ -173,7 +169,7 @@ export class DesktopFilePreviewGateway {
   constructor(
     private readonly fs: FilePreviewFsSeam,
     private readonly list: () => readonly WorkspaceMembership[],
-    private readonly traceSession: ((sessionId: string, signal: AbortSignal) => Promise<FilePreviewLineageTrace>) | undefined,
+    private readonly traceSession: TraceSession | undefined,
     private readonly logger: FilePreviewLogger,
     loopbackOrigin: string,
     private readonly config: FilePreviewGatewayConfig,
@@ -201,7 +197,7 @@ export class DesktopFilePreviewGateway {
       return { status: 'delegate' }
     }
 
-    const workspace = await this.resolveWorkspace(sessionId, signal)
+    const workspace = await resolveWorkspaceMembership(this.list, sessionId, this.traceSession, signal, this.logger, 'file preview')
     if (workspace === undefined) return { status: 'delegate' }
 
     const workspaceRoot = await this.fs.resolve(workspace.path, { signal })
@@ -317,7 +313,7 @@ export class DesktopFilePreviewGateway {
       return { status: 'error', code: 'unsupported-format', message: 'MDX cannot be edited as plain Markdown', retryable: false }
     }
 
-    const workspace = await this.resolveWorkspace(sessionId, signal)
+    const workspace = await resolveWorkspaceMembership(this.list, sessionId, this.traceSession, signal, this.logger, 'file preview')
     if (workspace === undefined) {
       return { status: 'error', code: 'no-workspace', message: 'the session has no workspace to write into', retryable: false }
     }
@@ -505,32 +501,9 @@ export class DesktopFilePreviewGateway {
     }
   }
 
-  /** Resolve the workspace that authorizes a session, via membership or lineage. */
-  private async resolveWorkspace(sessionId: string, signal: AbortSignal): Promise<WorkspaceMembership | undefined> {
-    const memberships = this.list()
-    let matched = memberships.find(membership => membership.sessionIds.includes(sessionId))
-    if (matched !== undefined) return matched
-    if (this.traceSession === undefined) return undefined
-    let trace: FilePreviewLineageTrace
-    try {
-      trace = await this.traceSession(sessionId, signal)
-    } catch (error) {
-      // An absent target or a failing corpus listing leaves no authoritative
-      // ancestor membership; the path keeps its native system-open behavior.
-      this.logger.warn('dsh-plugin-desktop: file preview lineage trace failed', error)
-      return undefined
-    }
-    if (trace.target.header.origin !== 'subagent') return undefined
-    for (const ancestor of trace.ancestors) {
-      matched = memberships.find(membership => membership.sessionIds.includes(ancestor.header.id))
-      if (matched !== undefined) return matched
-    }
-    return undefined
-  }
-
   /** Verify a held resource still binds to the same live workspace and file. */
   private async resourceBindingIntact(resource: ResourceRecord, signal: AbortSignal): Promise<boolean> {
-    const workspace = await this.resolveWorkspace(resource.sessionId, signal)
+    const workspace = await resolveWorkspaceMembership(this.list, resource.sessionId, this.traceSession, signal, this.logger, 'file preview')
     if (workspace?.path !== resource.workspacePath) return false
     let workspaceRoot: FilePreviewFsTarget
     try {
