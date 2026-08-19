@@ -26,7 +26,7 @@ export const inject = [
 export function apply(ctx: ClientContext): void {
   const environment = parseDesktopClientEnvironment(window.location.search)
   // The optional native file-manager clipboard capability is provided in every
-  // Desktop mode; the advanced layout and file-preview UI stay advanced-only.
+  // Desktop mode; the advanced shell remains advanced-only.
   provideClipboardFiles(ctx)
   if (environment.mode === 'advanced') applyAdvancedShell(ctx, environment)
 }
