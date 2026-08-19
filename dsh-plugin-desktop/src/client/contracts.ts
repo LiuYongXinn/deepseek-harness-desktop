@@ -1,4 +1,5 @@
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
+import type { ClipboardFilesGateway } from './clipboard/gateway.ts'
 
 /** Sidebar geometry passed by the desktop root slot. */
 export interface DesktopSidebarOwnerProps {
@@ -24,6 +25,8 @@ declare module '@deepseek-ai/cordis' {
     layout: DesktopLayoutService
     /** Loopback Connection handle the file-preview gateway issues RPC through. */
     connection: ConnectionHandle
+    /** Optional native file-manager clipboard capability provided by the Desktop client in both modes. */
+    clipboardFiles?: ClipboardFilesGateway
   }
 }
 
