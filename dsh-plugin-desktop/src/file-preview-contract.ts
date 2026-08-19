@@ -22,6 +22,16 @@ declare const filePreviewResourceId: unique symbol
  */
 export type FilePreviewResourceId = string & { readonly [filePreviewResourceId]: unique symbol }
 
+declare const filePreviewRevision: unique symbol
+
+/**
+ * Opaque, validated revision token identifying one specific read of a file's
+ * text. The Client echoes it back on save as the version guard so a save can
+ * never silently overwrite a newer on-disk version. Only the parsers and the
+ * Host mint a value; a raw string is never structurally a valid revision.
+ */
+export type FilePreviewRevision = string & { readonly [filePreviewRevision]: unique symbol }
+
 /**
  * Name of the loopback Connection RPC channel carrying every file-preview
  * endpoint. Both Host handler and Client caller register against this channel
@@ -37,7 +47,7 @@ export const FILE_PREVIEW_RPC_CHANNEL = '/desktop-file-preview'
 export const FILE_PREVIEW_BINARY_PREFIX = '/desktop-file-preview-content'
 
 /** Endpoint names accepted by the RPC channel, kept together for both sides. */
-export const FILE_PREVIEW_ENDPOINTS = ['probe', 'read-text', 'binary-url', 'release'] as const
+export const FILE_PREVIEW_ENDPOINTS = ['probe', 'read-text', 'binary-url', 'release', 'save-text'] as const
 
 /** Single source of truth for valid RPC endpoint names. */
 export type FilePreviewEndpoint = typeof FILE_PREVIEW_ENDPOINTS[number]
@@ -53,6 +63,9 @@ export const FILE_PREVIEW_BINARY_URL = 'binary-url'
 
 /** RPC endpoint idempotently releasing a held resource. */
 export const FILE_PREVIEW_RELEASE = 'release'
+
+/** RPC endpoint performing a version-guarded atomic text save. */
+export const FILE_PREVIEW_SAVE_TEXT = 'save-text'
 
 /**
  * Whether the payload is textual source (rendered with the Source family) or a
@@ -113,12 +126,12 @@ export type FilePreviewProbeResult =
   | { status: 'error'; code: string; message: string; retryable: boolean }
 
 /**
- * Text-read outcome. `ok` carries the decoded UTF-8 text and its resource id;
- * `stale` means the file changed after probe and should be re-probed; `error`
- * is a user-visible read failure with a machine code.
+ * Text-read outcome. `ok` carries the decoded UTF-8 text, its resource id, and
+ * the opaque revision to echo back on save; `stale` means the file changed after
+ * probe and should be re-probed; `error` is a user-visible read failure.
  */
 export type FilePreviewTextResult =
-  | { status: 'ok'; text: string; resourceId: FilePreviewResourceId }
+  | { status: 'ok'; text: string; resourceId: FilePreviewResourceId; revision: FilePreviewRevision }
   | { status: 'stale' }
   | { status: 'error'; code: string; message: string; retryable: boolean }
 
@@ -138,6 +151,46 @@ export type FilePreviewBinaryResult =
 export interface FilePreviewReleaseResult {
   released: boolean
 }
+
+/**
+ * Request payload of the {@link FILE_PREVIEW_SAVE_TEXT} endpoint. `path` is the
+ * raw path from the original probe; the Host re-authorizes it against the
+ * session's workspace on every save and never trusts the stored resource.
+ */
+export interface FilePreviewSaveTextRequest {
+  /** Active session id authorizing the write. */
+  sessionId: string
+  /** Raw path of the file to overwrite (relative or absolute). */
+  path: string
+  /** The revision the editor last read; the Host refuses a stale write. */
+  expectedRevision: FilePreviewRevision
+  /** Full replacement text content. */
+  text: string
+}
+
+/**
+ * Version-guarded save outcome. `ok` carries the new revision and size; the
+ * `conflict` arm means the file changed since the editor read it and the write
+ * was refused without touching the disk; `error` is any other failure.
+ */
+export type FilePreviewSaveTextResult =
+  | {
+      status: 'ok'
+      revision: FilePreviewRevision
+      text: string
+      size: number
+    }
+  | {
+      status: 'conflict'
+      code: 'stale-version'
+      message: string
+    }
+  | {
+      status: 'error'
+      code: string
+      message: string
+      retryable: boolean
+    }
 
 /**
  * Request payload of the {@link FILE_PREVIEW_PROBE} endpoint.
@@ -171,6 +224,14 @@ export interface FilePreviewReleaseRequest {
 /** Length cap applied to variable-length wire fields to bound memory cost. */
 const MAX_WIRE_FIELD_LENGTH = 64 * 1024
 
+/**
+ * Length cap applied to the `save-text` text body specifically. This is far
+ * above the generic field cap (an edited Markdown file can exceed 64 KiB) but
+ * still bounded so a hostile client cannot ship an unbounded payload. The Host
+ * applies its stricter configured byte limit as an additional gate.
+ */
+const MAX_WIRE_TEXT_LENGTH = 8 * 1024 * 1024
+
 /** Whether a wire value is a non-empty, bounded string. */
 function isBoundedNonEmptyString(value: unknown, maxLength: number): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= maxLength
@@ -196,6 +257,30 @@ export function parseResourceId(value: unknown): FilePreviewResourceId | undefin
  */
 export function FilePreviewResourceId(id: string): FilePreviewResourceId {
   return id as FilePreviewResourceId
+}
+
+/**
+ * Validate a wire `unknown` into a {@link FilePreviewRevision}. Rejects
+ * non-string values, empty revisions, and revisions too long for a bounded
+ * field.
+ * @param value - value from the wire.
+ * @returns the branded revision, or `undefined` when the value is not valid.
+ */
+export function parseRevision(value: unknown): FilePreviewRevision | undefined {
+  if (!isBoundedNonEmptyString(value, MAX_WIRE_FIELD_LENGTH)) return undefined
+  return value as FilePreviewRevision
+}
+
+/**
+ * Brand a caller-owned trusted string as a {@link FilePreviewRevision}. The
+ * Host mints revisions from a resource version and this is the only
+ * non-validating brand; parsers and wire validation must never call it on an
+ * `unknown`.
+ * @param revision - a validated raw revision held by the Host.
+ * @returns the branded revision.
+ */
+export function FilePreviewRevision(revision: string): FilePreviewRevision {
+  return revision as FilePreviewRevision
 }
 
 /**
@@ -258,6 +343,35 @@ export function parseReleaseRequest(value: unknown): { ok: true; value: FilePrev
 }
 
 /**
+ * Validate a {@link FILE_PREVIEW_SAVE_TEXT} request payload. Rejects missing or
+ * empty session/path/expectedRevision fields and unbounded or over-large text.
+ * @param value - value from the wire.
+ * @returns the validated request, or a structured bad-request error object.
+ */
+export function parseSaveTextRequest(value: unknown): { ok: true; value: FilePreviewSaveTextRequest } | { ok: false; message: string } {
+  const record = asPlainRecord(value)
+  if (record === undefined) return { ok: false, message: 'save-text payload must be a JSON object' }
+  const sessionId = record['sessionId']
+  const path = record['path']
+  if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > MAX_WIRE_FIELD_LENGTH) {
+    return { ok: false, message: 'save-text payload requires a non-empty bounded sessionId' }
+  }
+  if (typeof path !== 'string' || path.length === 0 || path.length > MAX_WIRE_FIELD_LENGTH) {
+    return { ok: false, message: 'save-text payload requires a non-empty bounded path' }
+  }
+  const expectedRevision = parseRevision(record['expectedRevision'])
+  if (expectedRevision === undefined) {
+    return { ok: false, message: 'save-text payload requires a valid expectedRevision' }
+  }
+  const text = record['text']
+  if (typeof text !== 'string') return { ok: false, message: 'save-text payload requires string text' }
+  if (text.length > MAX_WIRE_TEXT_LENGTH) {
+    return { ok: false, message: 'save-text payload text exceeds the wire size cap' }
+  }
+  return { ok: true, value: { sessionId, path, expectedRevision, text } }
+}
+
+/**
  * Validate an `unknown` probe result into the {@link FilePreviewProbeResult}
  * union. Rejects unknown discriminants, non-string ids, non-finite/negative
  * sizes, and invalid descriptor shapes.
@@ -282,8 +396,8 @@ export function parseProbeResult(value: unknown): FilePreviewProbeResult | undef
 
 /**
  * Validate an `unknown` probe descriptor into the {@link FilePreviewDescriptor}
- * union. Rejects non-string identities, invalid ids, and non-finite/negative
- * sizes.
+ * union. Rejects non-string identities, invalid ids, non-finite/negative
+ * sizes, and malformed extensions.
  * @param value - value from the wire.
  * @returns the validated descriptor, or `undefined` when invalid.
  */
@@ -314,8 +428,9 @@ function parseDescriptorBase(record: Readonly<Record<string, unknown>>): FilePre
   const mediaType = record['mediaType']
   const contentKind = record['contentKind']
   const size = record['size']
-  if (typeof displayPath !== 'string' || typeof name !== 'string' || typeof extension !== 'string'
+  if (typeof displayPath !== 'string' || typeof name !== 'string'
     || typeof mediaType !== 'string') return undefined
+  if (!isValidExtension(extension)) return undefined
   if (contentKind !== 'text' && contentKind !== 'image') return undefined
   if (!isFiniteSize(size)) return undefined
   const base: FilePreviewDescriptorBase = {
@@ -332,6 +447,23 @@ function parseDescriptorBase(record: Readonly<Record<string, unknown>>): FilePre
     base.language = language
   }
   return base
+}
+
+/**
+ * Validate a descriptor {@link FilePreviewDescriptorBase.extension}: it must be
+ * `''` or a dotted, lowercased, bounded extension that never contains a path
+ * separator. Rejects the bare classifier spelling (`md`) so a contract
+ * mismatch fails loudly on the wire instead of silently redirecting providers.
+ * @param value - the wire extension value.
+ * @returns true when the value is a well-formed descriptor extension.
+ */
+function isValidExtension(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > MAX_WIRE_FIELD_LENGTH) return false
+  if (value.length === 0) return true
+  if (value[0] !== '.') return false
+  if (value.includes('/') || value.includes('\\')) return false
+  if (value !== value.toLowerCase()) return false
+  return true
 }
 
 /**
@@ -353,7 +485,9 @@ export function parseTextResult(value: unknown): FilePreviewTextResult | undefin
   if (status !== 'ok' || typeof record['text'] !== 'string') return undefined
   const resourceId = parseResourceId(record['resourceId'])
   if (resourceId === undefined) return undefined
-  return { status: 'ok', text: record['text'], resourceId }
+  const revision = parseRevision(record['revision'])
+  if (revision === undefined) return undefined
+  return { status: 'ok', text: record['text'], resourceId, revision }
 }
 
 /**
@@ -389,6 +523,33 @@ export function parseReleaseResult(value: unknown): FilePreviewReleaseResult | u
   const record = asPlainRecord(value)
   if (record === undefined || typeof record['released'] !== 'boolean') return undefined
   return { released: record['released'] }
+}
+
+/**
+ * Validate an `unknown` save result into the {@link FilePreviewSaveTextResult}
+ * union. Rejects unknown discriminants, malformed conflict arms, and invalid
+ * ok-arm fields.
+ * @param value - value from the wire.
+ * @returns the validated result, or `undefined` when invalid.
+ */
+export function parseSaveTextResult(value: unknown): FilePreviewSaveTextResult | undefined {
+  const record = asPlainRecord(value)
+  if (record === undefined) return undefined
+  const status = record['status']
+  if (status === 'conflict') {
+    if (record['code'] !== 'stale-version' || typeof record['message'] !== 'string') return undefined
+    return { status: 'conflict', code: 'stale-version', message: record['message'] }
+  }
+  if (status === 'error') {
+    const parsed = parseErrorRecord(record)
+    if (parsed === undefined) return undefined
+    return parsed
+  }
+  if (status !== 'ok') return undefined
+  const revision = parseRevision(record['revision'])
+  if (revision === undefined) return undefined
+  if (typeof record['text'] !== 'string' || !isFiniteSize(record['size'])) return undefined
+  return { status: 'ok', revision, text: record['text'], size: record['size'] }
 }
 
 /** Validate the shared `error` arm fields of a business-result union. */

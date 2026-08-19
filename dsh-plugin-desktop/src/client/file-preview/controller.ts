@@ -16,6 +16,8 @@ import type {
   FilePreviewDescriptor,
   FilePreviewProbeResult,
   FilePreviewResourceId,
+  FilePreviewRevision,
+  FilePreviewSaveTextResult,
   FilePreviewTextResult,
 } from '../../file-preview-contract.ts'
 import type { FilePreviewGateway, FilePreviewTransportError } from './gateway.ts'
@@ -56,6 +58,34 @@ export type FilePreviewSnapshot =
     }
   | { status: 'error'; sessionId: string; path: string; error: FilePreviewError; retryable: boolean }
 
+/** Save error retained beside the editor without replacing the display snapshot. */
+export interface FilePreviewSaveError {
+  code: string
+  message: string
+  retryable: boolean
+}
+
+/** Immutable external-store snapshot of the current editable text draft. */
+export interface FilePreviewSaveState {
+  baselineRevision: FilePreviewRevision | undefined
+  draftText: string | undefined
+  dirty: boolean
+  saving: boolean
+  saved: boolean
+  lastSaveError: FilePreviewSaveError | undefined
+  conflict: { code: 'stale-version'; message: string } | undefined
+}
+
+const EMPTY_SAVE_STATE: FilePreviewSaveState = Object.freeze({
+  baselineRevision: undefined,
+  draftText: undefined,
+  dirty: false,
+  saving: false,
+  saved: false,
+  lastSaveError: undefined,
+  conflict: undefined,
+})
+
 /** Callbacks the controller uses to drive the hosting surface. */
 export interface FilePreviewSurfaceCalls {
   /** Select the file surface (takeover). */
@@ -95,6 +125,13 @@ function toPreviewError(error: unknown): FilePreviewError {
 export class FilePreviewController {
   private snapshot: FilePreviewSnapshot = Object.freeze({ status: 'closed' })
   private readonly listeners = new Set<() => void>()
+  private saveState: FilePreviewSaveState = EMPTY_SAVE_STATE
+  private readonly saveListeners = new Set<() => void>()
+  private draftGeneration = 0
+  private saveController: AbortController | undefined
+  private saveQueue: Promise<FilePreviewSaveTextResult> = Promise.resolve({
+    status: 'error', code: 'not-ready', message: 'no editable text preview is ready', retryable: false,
+  })
   private revision = 0
   private requestController: AbortController | undefined
   /** Resource of the in-flight load; released on supersede/close/suspend/dispose. */
@@ -134,6 +171,81 @@ export class FilePreviewController {
     return () => {
       this.listeners.delete(listener)
     }
+  }
+
+  /** @returns the immutable current editor/save snapshot. */
+  getSaveState(): FilePreviewSaveState {
+    return this.saveState
+  }
+
+  /** Subscribe to editor/save-state replacements. */
+  subscribeSaveState(listener: () => void): () => void {
+    this.saveListeners.add(listener)
+    return () => {
+      this.saveListeners.delete(listener)
+    }
+  }
+
+  /** Replace the current editor draft and mark it dirty when it differs from disk. */
+  updateDraft(text: string): void {
+    if (!this.isEditableReady()) return
+    const changed = text !== this.saveState.draftText
+    if (changed) this.draftGeneration += 1
+    this.publishSaveState({
+      ...this.saveState,
+      draftText: text,
+      dirty: text !== this.readyText(),
+      saved: false,
+      lastSaveError: undefined,
+      conflict: this.saveState.conflict,
+    })
+  }
+
+  /** Alias for providers that report the full draft as a dirty notification. */
+  markDirty(text: string): void {
+    this.updateDraft(text)
+  }
+
+  /**
+   * Queue one version-guarded save. Only one gateway request runs at a time;
+   * each queued call captures its text while reading the latest baseline when
+   * it reaches the front of the queue.
+   */
+  saveText(text: string): Promise<FilePreviewSaveTextResult> {
+    if (this.disposed) return Promise.resolve(this.saveError('disposed', 'file preview is disposed', false))
+    this.updateDraft(text)
+    const run = async (): Promise<FilePreviewSaveTextResult> => this.performSave(text)
+    const result = this.saveQueue.then(run, run)
+    this.saveQueue = result
+    return result
+  }
+
+  /** Flush a dirty draft before navigation; failures keep the current surface visible. */
+  async mayLeave(): Promise<boolean> {
+    const state = this.saveState
+    if (!state.dirty) return true
+    if (state.draftText === undefined || state.conflict !== undefined) return false
+    const result = await this.saveText(state.draftText)
+    return result.status === 'ok' && !this.saveState.dirty
+  }
+
+  /** Guarded refresh for UI navigation. */
+  async refreshGuarded(): Promise<'handled' | 'delegate' | 'blocked'> {
+    if (!await this.mayLeave()) return 'blocked'
+    return this.refresh()
+  }
+
+  /** Guarded close for UI navigation. */
+  async closeGuarded(): Promise<boolean> {
+    if (!await this.mayLeave()) return false
+    this.close()
+    return true
+  }
+
+  /** Clear a conflict/error while retaining the local draft for continued editing. */
+  continueEditing(): void {
+    if (!this.isEditableReady()) return
+    this.publishSaveState({ ...this.saveState, lastSaveError: undefined, conflict: undefined, saved: false })
   }
 
   /**
@@ -203,6 +315,8 @@ export class FilePreviewController {
   close(): void {
     if (this.disposed) return
     this.revision += 1
+    this.abortSave()
+    this.resetSaveState()
     this.abortRequest()
     this.releaseBestEffort(this.outstandingResource)
     this.outstandingResource = undefined
@@ -249,6 +363,7 @@ export class FilePreviewController {
     this.disposed = true
     this.requestController?.abort()
     this.requestController = undefined
+    this.abortSave()
     const toRelease = [this.outstandingResource, this.heldResource].filter(
       (id): id is FilePreviewResourceId => id !== undefined,
     )
@@ -256,11 +371,14 @@ export class FilePreviewController {
     this.heldResource = undefined
     await Promise.all(toRelease.map(id => this.gateway.release(id)))
     this.listeners.clear()
+    this.saveListeners.clear()
   }
 
-  /** Start a new request: supersede the previous one and bump the revision. */
+  /** Start a new request: supersede reads and saves, then bump the revision. */
   private startRequest(): number {
     this.requestController?.abort()
+    this.abortSave()
+    this.resetSaveState()
     this.requestController = new AbortController()
     this.releaseBestEffort(this.outstandingResource)
     this.outstandingResource = undefined
@@ -272,6 +390,112 @@ export class FilePreviewController {
   private abortRequest(): void {
     this.requestController?.abort()
     this.requestController = undefined
+  }
+
+  /** Cancel a currently issued save. */
+  private abortSave(): void {
+    this.saveController?.abort()
+    this.saveController = undefined
+  }
+
+  /** Execute one queued save against the latest baseline revision. */
+  private async performSave(text: string): Promise<FilePreviewSaveTextResult> {
+    const snapshot = this.snapshot
+    const baselineRevision = this.saveState.baselineRevision
+    if (snapshot.status !== 'ready' || snapshot.content.kind !== 'text' || baselineRevision === undefined) {
+      return this.saveError('not-ready', 'no editable text preview is ready', false)
+    }
+    if (this.saveState.conflict !== undefined) {
+      return { status: 'conflict', code: 'stale-version', message: this.saveState.conflict.message }
+    }
+    const sessionId = snapshot.sessionId
+    const path = snapshot.path
+    const generation = this.draftGeneration
+    const controller = new AbortController()
+    this.saveController = controller
+    this.publishSaveState({ ...this.saveState, saving: true, saved: false, lastSaveError: undefined })
+    try {
+      const result = await this.gateway.saveText({ sessionId, path, expectedRevision: baselineRevision, text }, controller.signal)
+      if (this.disposed || this.snapshot.status !== 'ready' || this.snapshot.sessionId !== sessionId || this.snapshot.path !== path) {
+        return result
+      }
+      if (result.status === 'ok') {
+        const unchanged = generation === this.draftGeneration && this.saveState.draftText === text
+        this.publishSaveState({
+          ...this.saveState,
+          baselineRevision: result.revision,
+          dirty: !unchanged,
+          saving: false,
+          saved: unchanged,
+          lastSaveError: undefined,
+          conflict: undefined,
+        })
+        return result
+      }
+      if (result.status === 'conflict') {
+        this.publishSaveState({
+          ...this.saveState,
+          dirty: true,
+          saving: false,
+          saved: false,
+          lastSaveError: undefined,
+          conflict: { code: result.code, message: result.message },
+        })
+        return result
+      }
+      this.publishSaveState({
+        ...this.saveState,
+        dirty: true,
+        saving: false,
+        saved: false,
+        lastSaveError: { code: result.code, message: result.message, retryable: result.retryable },
+        conflict: undefined,
+      })
+      return result
+    } catch (error) {
+      const result = isAbortError(error)
+        ? this.saveError('aborted', 'save cancelled', true)
+        : this.saveError(toPreviewError(error).code, toPreviewError(error).message, true)
+      if (!this.disposed && this.snapshot.status === 'ready' && this.snapshot.sessionId === sessionId && this.snapshot.path === path) {
+        this.publishSaveState({
+          ...this.saveState,
+          dirty: true,
+          saving: false,
+          saved: false,
+          lastSaveError: { code: result.code, message: result.message, retryable: result.retryable },
+          conflict: undefined,
+        })
+      }
+      return result
+    } finally {
+      if (this.saveController === controller) this.saveController = undefined
+    }
+  }
+
+  private saveError(code: string, message: string, retryable: boolean): Extract<FilePreviewSaveTextResult, { status: 'error' }> {
+    return { status: 'error', code, message, retryable }
+  }
+
+  private isEditableReady(): boolean {
+    return this.snapshot.status === 'ready'
+      && this.snapshot.content.kind === 'text'
+      && this.saveState.baselineRevision !== undefined
+  }
+
+  private readyText(): string | undefined {
+    return this.snapshot.status === 'ready' && this.snapshot.content.kind === 'text'
+      ? this.snapshot.content.text
+      : undefined
+  }
+
+  private resetSaveState(): void {
+    this.draftGeneration = 0
+    this.publishSaveState(EMPTY_SAVE_STATE)
+  }
+
+  private publishSaveState(next: FilePreviewSaveState): void {
+    this.saveState = Object.freeze(next)
+    for (const listener of this.saveListeners) listener()
   }
 
   /** Load a probed descriptor's content according to the provider load mode. */
@@ -304,6 +528,16 @@ export class FilePreviewController {
           return
         }
         this.adoptReady(sessionId, path, descriptor, provider.id, { kind: 'text', text: result.text }, undefined)
+        this.draftGeneration = 0
+        this.publishSaveState({
+          baselineRevision: result.revision,
+          draftText: result.text,
+          dirty: false,
+          saving: false,
+          saved: true,
+          lastSaveError: undefined,
+          conflict: undefined,
+        })
         return
       }
       await this.finishNonFatalLoad(sessionId, path, revision, resourceId, result, allowStaleRetry)

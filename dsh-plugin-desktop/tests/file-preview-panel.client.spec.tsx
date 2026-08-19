@@ -247,7 +247,7 @@ describe('file-preview-panel (client)', () => {
     cleanup()
   })
 
-  it('renders markdown tabs and switches between preview and source', () => {
+  it('renders markdown tabs and switches between edit and editable source', () => {
     const markdownProvider: FilePreviewProvider = {
       id: 'markdown', priority: 350, loadMode: 'text',
       supports: descriptor => descriptor.extension === '.md',
@@ -266,13 +266,13 @@ describe('file-preview-panel (client)', () => {
       <FilePreviewPanel snapshot={snapshot} registry={makeRegistry(markdownProvider)} {...fakeCallbacks().props} />,
     )
     expect(container.querySelector('[role="tab"]')).toBeDefined()
-    expect(text()).toContain('预览')
+    expect(text()).toContain('编辑')
     expect(text()).toContain('源码')
-    // Switch to source view and confirm the raw markdown text is now visible.
     const sourceTab = [...container.querySelectorAll('[role="tab"]')].find(t => t.textContent === '源码')
     expect(sourceTab).toBeDefined()
     act(() => { sourceTab!.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
-    expect(container.querySelector('pre.dshDesktopSourcePlain')?.textContent).toContain('# hello')
+    expect(container.querySelector<HTMLTextAreaElement>('.dshDesktopMarkdownSourceEditor')?.value).toContain('# hello')
+    expect(container.querySelector('pre.dshDesktopSourcePlain')).toBeNull()
     cleanup()
   })
 

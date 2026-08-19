@@ -9,8 +9,8 @@
  */
 
 import type { ComponentType } from 'react'
-import type { FilePreviewDescriptor } from '../../file-preview-contract.ts'
-import type { FilePreviewContent } from './controller.ts'
+import type { FilePreviewDescriptor, FilePreviewSaveTextResult } from '../../file-preview-contract.ts'
+import type { FilePreviewContent, FilePreviewSaveState } from './controller.ts'
 
 /** How the provider loads a descriptor's payload through the gateway. */
 export type FilePreviewLoadMode = 'text' | 'binary-url' | 'metadata-only'
@@ -24,6 +24,12 @@ export interface FilePreviewRendererProps {
   descriptor: FilePreviewDescriptor
   /** The loaded content the provider renders (`text`, `binary-url`, or none). */
   content: FilePreviewContent
+  /** Current draft/save state for an editable text provider. */
+  saveState?: FilePreviewSaveState | undefined
+  /** Report a complete replacement draft after an editor change. */
+  onDraftChange?: ((text: string) => void) | undefined
+  /** Queue a version-guarded save of the supplied full text. */
+  onSaveRequest?: ((text: string) => Promise<FilePreviewSaveTextResult>) | undefined
   /** Ask the host to open the current file with the system default application. */
   onOpenExternally(): void
 }

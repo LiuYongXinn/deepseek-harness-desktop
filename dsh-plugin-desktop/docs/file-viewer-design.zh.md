@@ -2,7 +2,7 @@
 
 Status: implemented
 
-本文档描述 DSH Desktop 面向程序员常用文件格式的内置只读查看器。目标是在用户点击会话中的文件链接时，将文件直接显示在当前会话右侧，同时保留“使用系统默认应用打开”的显式操作。
+本文档描述 DSH Desktop 面向程序员常用文件格式的内置文件查看器：多数格式为只读，Markdown 作为特例支持受 workspace 约束、带版本冲突保护的可编辑保存（见 `file-viewer-markdown-editor-design.zh.md`）。目标是在用户点击会话中的文件链接时，将文件直接显示在当前会话右侧，同时保留“使用系统默认应用打开”的显式操作。
 
 ## 1. 背景
 
@@ -37,7 +37,7 @@ DSH Desktop 已在高级模式中拥有 `AdvancedFrame`。该 Frame 包含 sideb
 
 ### 2.2 非目标
 
-- 不提供文件编辑、保存、自动格式化或 IDE 功能。
+- 除 Markdown 特例（受 workspace 约束、带版本冲突保护的可编辑保存，见 `file-viewer-markdown-editor-design.zh.md`）外，不提供文件编辑、保存、自动格式化或 IDE 功能。
 - 不为第 4 节支持范围以外的文件提供内置渲染。
 - 不构建多标签编辑器、目录树或完整 IDE。
 - 不向 renderer 暴露 Node、Electron IPC、原始 `file://` 或不受限文件系统能力。

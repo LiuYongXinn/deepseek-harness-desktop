@@ -34,6 +34,7 @@ const fakeGateway: FilePreviewGateway = {
   readText: () => Promise.resolve({ status: 'error', code: 'x', message: 'x', retryable: false }),
   binaryUrl: () => Promise.resolve({ status: 'error', code: 'x', message: 'x', retryable: false }),
   release: () => Promise.resolve(),
+  saveText: () => Promise.resolve({ status: 'error', code: 'x', message: 'x', retryable: false }),
 }
 
 /** A provider that renders a stable marker for identity/mount transitions. */

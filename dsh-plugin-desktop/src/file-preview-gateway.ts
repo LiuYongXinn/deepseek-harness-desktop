@@ -13,6 +13,9 @@ import { randomBytes } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { FsError } from '@deepseek-ai/dsh-fs'
+import { FsVersion } from '@deepseek-ai/dsh-fs'
+import type { FsWriteIntent, FsWriteOutcome } from '@deepseek-ai/dsh-fs'
+import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox'
 import type {
   FilePreviewBinaryResult,
   FilePreviewContentKind,
@@ -20,15 +23,19 @@ import type {
   FilePreviewProbeResult,
   FilePreviewReleaseResult,
   FilePreviewResourceId,
+  FilePreviewSaveTextResult,
   FilePreviewTextResult,
 } from './file-preview-contract.ts'
 import {
   FILE_PREVIEW_BINARY_PREFIX,
   FilePreviewResourceId as brandResourceId,
+  FilePreviewRevision as brandRevision,
   parseBinaryUrlRequest,
   parseProbeRequest,
   parseReadTextRequest,
   parseReleaseRequest,
+  parseSaveTextRequest,
+  type FilePreviewRevision,
 } from './file-preview-contract.ts'
 import {
   classifyExtensionlessText,
@@ -44,28 +51,35 @@ export interface FilePreviewFsTarget {
 
 /** Metadata values returned by the fs seam's stat. */
 interface FilePreviewFsInfo {
-  version: unknown
+  version: FsVersion
   type: 'file' | 'directory' | 'other'
   size?: number
 }
 
 /** A stat result proven to describe a regular file with a finite size. */
 type RegularFileInfo = {
-  version: unknown
+  version: FsVersion
   type: 'file'
   size: number
 }
 
 /**
  * Narrow filesystem seam the gateway runs on. Structurally compatible with
- * `Pick<FileSystem, 'resolve' | 'contains' | 'stat' | 'readBytes'>`; tests
- * supply an in-memory fake and the real Host passes `ctx.fs`.
+ * `Pick<FileSystem, 'resolve' | 'contains' | 'stat' | 'readBytes' | 'writeText'>`;
+ * tests supply an in-memory fake and the real Host passes `ctx.fs`.
  */
 export interface FilePreviewFsSeam {
   resolve(path: string, opts?: { cwd?: string; signal?: AbortSignal }): Promise<FilePreviewFsTarget>
   contains(parent: FilePreviewFsTarget, child: FilePreviewFsTarget): boolean
   stat(target: FilePreviewFsTarget, signal?: AbortSignal): Promise<FilePreviewFsInfo | undefined>
   readBytes(target: FilePreviewFsTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array>
+  writeText(
+    target: FilePreviewFsTarget,
+    content: string,
+    expected: FsWriteIntent | undefined,
+    signal: AbortSignal | undefined,
+    sandboxPolicy: SandboxExecutionPolicy | undefined,
+  ): Promise<FsWriteOutcome>
 }
 
 /** Minimal logger surface the gateway writes diagnostics to. */
@@ -105,7 +119,7 @@ interface ResourceRecord {
   workspaceRoot: FilePreviewFsTarget
   candidate: FilePreviewFsTarget
   candidatePath: string
-  version: unknown
+  version: FsVersion
   size: number
   mediaType: string
   contentKind: FilePreviewContentKind
@@ -273,9 +287,88 @@ export class DesktopFilePreviewGateway {
       if (bytes.includes(0)) return { status: 'stale' }
       const text = this.decodeUtf8Fatal(bytes)
       if (text === undefined) return { status: 'stale' }
-      return { status: 'ok', text, resourceId }
+      return { status: 'ok', text, resourceId, revision: this.mintRevision(resource.version) }
     } finally {
       read.end()
+    }
+  }
+
+  /**
+   * Perform a version-guarded, workspace-confined atomic text save. The raw
+   * path is re-authorized against the session's workspace on every call (never
+   * trusted from a held token); a stale expected revision refuses without
+   * touching the disk.
+   * @param sessionId - the raw session id from the wire.
+   * @param path - the raw path from the wire (relative or absolute).
+   * @param expectedRevision - the revision the editor last read.
+   * @param text - the full replacement text.
+   * @param signal - cancels the write.
+   * @returns `ok`, `conflict`, or `error`.
+   */
+  async saveText(sessionId: string, path: string, expectedRevision: FilePreviewRevision, text: string, signal: AbortSignal): Promise<FilePreviewSaveTextResult> {
+    this.assertNotDisposed()
+    this.purgeExpired()
+    SessionId(sessionId)
+
+    if (this.byteLength(text) > this.config.maxTextBytes) {
+      return { status: 'error', code: 'content-too-large', message: 'the edited content exceeds the text limit', retryable: true }
+    }
+    if (classifyFileName(this.baseNameOf(path)).extension === 'mdx') {
+      return { status: 'error', code: 'unsupported-format', message: 'MDX cannot be edited as plain Markdown', retryable: false }
+    }
+
+    const workspace = await this.resolveWorkspace(sessionId, signal)
+    if (workspace === undefined) {
+      return { status: 'error', code: 'no-workspace', message: 'the session has no workspace to write into', retryable: false }
+    }
+    const workspaceRoot = await this.fs.resolve(workspace.path, { signal })
+    let target: FilePreviewFsTarget
+    try {
+      target = await this.fs.resolve(path, { cwd: workspace.path, signal })
+    } catch (error) {
+      this.logger.warn('dsh-plugin-desktop: file preview save resolve failed', error)
+      return { status: 'error', code: 'resolve-failed', message: 'unable to resolve the target path', retryable: true }
+    }
+    if (!this.fs.contains(workspaceRoot, target)) {
+      return { status: 'error', code: 'outside-workspace', message: 'the target is outside the workspace', retryable: false }
+    }
+
+    let info: FilePreviewFsInfo | undefined
+    try {
+      info = await this.fs.stat(target, signal)
+    } catch (error) {
+      this.logger.warn('dsh-plugin-desktop: file preview save stat failed', error)
+      return this.mapSaveError(error)
+    }
+    if (!this.isRegularFile(info)) {
+      return { status: 'error', code: 'not-regular-file', message: 'the target is not a regular text file', retryable: false }
+    }
+
+    const write = this.beginRead(signal)
+    try {
+      const outcome = await this.fs.writeText(
+        target,
+        text,
+        { kind: 'replaceIfVersion', version: this.toFsVersion(expectedRevision) },
+        write.controller.signal,
+        {
+          mode: 'workspace-write',
+          workspaceRoot: workspace.path,
+          sessionId: SessionId(sessionId),
+        },
+      )
+      const revision = this.mintRevision(outcome.version)
+      return {
+        status: 'ok',
+        revision,
+        text: String(text),
+        size: this.byteLength(text),
+      }
+    } catch (error) {
+      if (isAbortError(error)) throw error
+      return this.mapSaveError(error)
+    } finally {
+      write.end()
     }
   }
 
@@ -393,6 +486,20 @@ export class DesktopFilePreviewGateway {
         if (!request.ok) return badRequest(request.message)
         return { ok: true, value: this.release(request.value) }
       }
+      case 'save-text': {
+        const request = parseSaveTextRequest(payload)
+        if (!request.ok) return badRequest(request.message)
+        return {
+          ok: true,
+          value: await this.saveText(
+            request.value.sessionId,
+            request.value.path,
+            request.value.expectedRevision,
+            request.value.text,
+            signal,
+          ),
+        }
+      }
       default:
         return badRequest(`unknown file-preview endpoint "${endpoint}"`)
     }
@@ -499,6 +606,37 @@ export class DesktopFilePreviewGateway {
     return { status: 'error', code: 'read-failed', message: String(error), retryable: true }
   }
 
+  /**
+   * Map a `writeText` failure into a save result. A stale version becomes a
+   * conflict (never auto-overwrite); an abort is re-thrown as cancellation so
+   * the controller keeps the current editing state.
+   */
+  private mapSaveError(error: unknown): FilePreviewSaveTextResult {
+    if (error instanceof FsError) {
+      if (error.code === 'FS_ABORTED') throw error
+      switch (error.code) {
+        case 'FS_STALE_VERSION':
+          return { status: 'conflict', code: 'stale-version', message: 'the file changed on disk; your draft is kept' }
+        case 'FS_PERMISSION_DENIED':
+          return { status: 'error', code: 'FS_PERMISSION_DENIED', message: error.message, retryable: true }
+        case 'FS_SANDBOX_DENIED':
+          return { status: 'error', code: 'FS_SANDBOX_DENIED', message: 'the sandbox refused the write; check configuration', retryable: false }
+        case 'FS_NOT_FOUND':
+          return { status: 'error', code: 'FS_NOT_FOUND', message: 'the file was deleted or moved', retryable: false }
+        case 'FS_NOT_REGULAR_FILE':
+          return { status: 'error', code: 'FS_NOT_REGULAR_FILE', message: 'the file type changed', retryable: false }
+        case 'FS_TOO_LARGE':
+          return { status: 'error', code: 'FS_TOO_LARGE', message: 'the content exceeds the edit limit', retryable: false }
+        default:
+          this.logger.warn('dsh-plugin-desktop: file preview save failed', error)
+          return { status: 'error', code: error.code, message: error.message, retryable: true }
+      }
+    }
+    if (isAbortError(error)) throw error
+    this.logger.warn('dsh-plugin-desktop: file preview save failed', error)
+    return { status: 'error', code: 'save-failed', message: String(error), retryable: true }
+  }
+
   /** Read and validate image bytes for a held resource over the data plane. */
   private async readImageResource(resourceId: FilePreviewResourceId, signal: AbortSignal): Promise<HttpReadOutcome> {
     this.purgeExpired()
@@ -568,7 +706,7 @@ export class DesktopFilePreviewGateway {
       resourceId: id,
       displayPath: candidate.displayPath,
       name: this.baseNameOf(path),
-      extension: classifyFileName(this.baseNameOf(path)).extension,
+      extension: this.normalizedExtension(path),
       mediaType,
       contentKind,
       size: info.size,
@@ -583,7 +721,7 @@ export class DesktopFilePreviewGateway {
       limitBytes,
       displayPath: path,
       name: this.baseNameOf(path),
-      extension: classifyFileName(this.baseNameOf(path)).extension,
+      extension: this.normalizedExtension(path),
       mediaType: definition.mediaType,
       contentKind: definition.contentKind,
       ...(definition.language === undefined ? {} : { language: definition.language }),
@@ -611,6 +749,32 @@ export class DesktopFilePreviewGateway {
   /** Mint an opaque, high-entropy, URL-safe resource token (256 bit). */
   private mintId(): FilePreviewResourceId {
     return brandResourceId(randomBytes(32).toString('base64url'))
+  }
+
+  /**
+   * Mint an opaque wire revision from a resource version. The revision is the
+   * string form of the FsVersion and is echoed back on save as the guard.
+   * @param version - the freshness token of the read.
+   * @returns the branded revision.
+   */
+  private mintRevision(version: unknown): FilePreviewRevision {
+    return brandRevision(String(version))
+  }
+
+  /**
+   * Recover the FsVersion a wire revision guards. Revisions are stringified
+   * FsVersions, so this round-trips cleanly for both the real backend and the
+   * in-memory test fake.
+   * @param revision - the wire revision.
+   * @returns the reconstructed FsVersion.
+   */
+  private toFsVersion(revision: FilePreviewRevision): FsVersion {
+    return FsVersion(String(revision))
+  }
+
+  /** UTF-8 byte length of a JS string, matching the Host's byte gate. */
+  private byteLength(text: string): number {
+    return new TextEncoder().encode(text).length
   }
 
   /** Remove expired resources lazily before a probe/read/binary/release. */
@@ -702,6 +866,21 @@ export class DesktopFilePreviewGateway {
     const normalized = path.replace(/\\/g, '/')
     const index = normalized.lastIndexOf('/')
     return index === -1 ? normalized : normalized.slice(index + 1)
+  }
+
+  /**
+   * Derive the descriptor extension field for a path. The classifier returns an
+   * extension without a leading dot (`md`), while the descriptor contract
+   * requires the leading dot (`.md`) or `''` when absent. Both descriptor
+   * constructors share this one conversion so an unavailable spelling can never
+   * diverge from an available one.
+   * @param path - the raw request path.
+   * @returns the dotted extension (lowercase), or `''` when the classifier
+   *   reports none.
+   */
+  private normalizedExtension(path: string): string {
+    const raw = classifyFileName(this.baseNameOf(path)).extension
+    return raw === '' ? '' : `.${raw}`
   }
 
   /** Whether metadata describes a regular file with a finite non-negative size. */

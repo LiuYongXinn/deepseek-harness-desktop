@@ -127,13 +127,20 @@ export function JsonView({ descriptor, content }: FilePreviewRendererProps): Rea
   )
 }
 
-/** Register the JSON provider (`application/json`, extension `.json`). */
+/**
+ * Register the JSON provider. Semantic acceptance on `application/json` +
+ * `json` language keeps `.jsonc` (language `jsonc`) on the generic Source path.
+ * @param registry - the provider registry to register on.
+ * @returns the registration disposer.
+ */
 export function registerJsonProvider(registry: { register(provider: FilePreviewProvider): () => void }): () => void {
   return registry.register({
     id: 'desktop.json',
     priority: 400,
     loadMode: 'text',
-    supports: descriptor => descriptor.extension === '.json' && descriptor.contentKind === 'text',
+    supports: descriptor => descriptor.contentKind === 'text'
+      && descriptor.mediaType === 'application/json'
+      && descriptor.language === 'json',
     Component: JsonView,
   })
 }

@@ -15,9 +15,11 @@ import {
   FILE_PREVIEW_READ_TEXT,
   FILE_PREVIEW_RELEASE,
   FILE_PREVIEW_RPC_CHANNEL,
+  FILE_PREVIEW_SAVE_TEXT,
   parseBinaryResult,
   parseProbeResult,
   parseReleaseResult,
+  parseSaveTextResult,
   parseTextResult,
   type FilePreviewBinaryResult,
   type FilePreviewBinaryUrlRequest,
@@ -26,6 +28,8 @@ import {
   type FilePreviewReadTextRequest,
   type FilePreviewReleaseRequest,
   type FilePreviewResourceId,
+  type FilePreviewSaveTextRequest,
+  type FilePreviewSaveTextResult,
   type FilePreviewTextResult,
 } from '../../file-preview-contract.ts'
 
@@ -56,6 +60,7 @@ export interface FilePreviewGateway {
   readText(resourceId: FilePreviewResourceId, signal: AbortSignal): Promise<FilePreviewTextResult>
   binaryUrl(resourceId: FilePreviewResourceId, signal: AbortSignal): Promise<FilePreviewBinaryResult>
   release(resourceId: FilePreviewResourceId): Promise<void>
+  saveText(request: FilePreviewSaveTextRequest, signal: AbortSignal): Promise<FilePreviewSaveTextResult>
 }
 
 /**
@@ -134,6 +139,22 @@ export class ConnectionFilePreviewGateway implements FilePreviewGateway {
     } catch (error) {
       this.logger?.debug('dsh-plugin-desktop: file preview release failed', error)
     }
+  }
+
+  /**
+   * Perform a version-guarded atomic text save. The request echoes the revision
+   * the editor last read so the Host can refuse a stale write.
+   * @param request - the validated save request (session, path, revision, text).
+   * @param signal - caller cancellation.
+   * @returns the validated save result (`ok`, `conflict`, or `error`).
+   */
+  async saveText(request: FilePreviewSaveTextRequest, signal: AbortSignal): Promise<FilePreviewSaveTextResult> {
+    const envelope = await this.call(FILE_PREVIEW_SAVE_TEXT, request, signal)
+    const result = parseSaveTextResult(envelope)
+    if (result === undefined) {
+      throw new FilePreviewTransportError('invalid-response', 'invalid file-preview save-text response')
+    }
+    return result
   }
 
   /**

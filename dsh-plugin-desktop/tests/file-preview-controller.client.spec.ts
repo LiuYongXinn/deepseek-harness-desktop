@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { FilePreviewResourceId as brandResourceId } from '../src/file-preview-contract.ts'
+import { FilePreviewResourceId as brandResourceId, FilePreviewRevision as brandRevision } from '../src/file-preview-contract.ts'
 import type {
   FilePreviewBinaryResult,
   FilePreviewDescriptor,
   FilePreviewProbeResult,
   FilePreviewResourceId,
+  FilePreviewSaveTextResult,
   FilePreviewTextResult,
 } from '../src/file-preview-contract.ts'
 import { FilePreviewController } from '../src/client/file-preview/controller.ts'
@@ -23,6 +24,14 @@ class Deferred<T> {
       this.reject = reject
     })
   }
+}
+
+/** A deterministic fake revision echoed by text reads. */
+const REV = brandRevision('rev-1')
+
+/** Build a successful text-read result with a stable revision. */
+function okText(text: string, resourceId: string): FilePreviewTextResult {
+  return { status: 'ok', text, resourceId: brandResourceId(resourceId), revision: REV }
 }
 
 /** A descriptor factory that keys the resource id off the extension (+ index). */
@@ -79,6 +88,32 @@ class FakeGateway implements FilePreviewGateway {
   release(resourceId: FilePreviewResourceId): Promise<void> {
     this.released.push(String(resourceId))
     return Promise.resolve()
+  }
+
+  readonly saveRequests: Array<{ sessionId: string; path: string; text: string; revision: string; signal: AbortSignal }> = []
+  private readonly saveQueue: Array<Deferred<FilePreviewSaveTextResult>> = []
+  saveResultOverride: FilePreviewSaveTextResult | undefined
+
+  saveText(request: { sessionId: string; path: string; text: string; expectedRevision: { toString(): string } }, signal: AbortSignal): Promise<FilePreviewSaveTextResult> {
+    this.saveRequests.push({
+      sessionId: request.sessionId,
+      path: request.path,
+      text: request.text,
+      revision: String(request.expectedRevision),
+      signal,
+    })
+    if (this.saveResultOverride !== undefined) {
+      return Promise.resolve(this.saveResultOverride)
+    }
+    const deferred = new Deferred<FilePreviewSaveTextResult>()
+    this.saveQueue.push(deferred)
+    return deferred.promise
+  }
+
+  nextSave(): Deferred<FilePreviewSaveTextResult> {
+    const next = this.saveQueue.shift()
+    if (next === undefined) throw new Error('no pending save')
+    return next
   }
 
   /** Number of pending unconsumed probe results. */
@@ -178,7 +213,7 @@ describe('file-preview-controller', () => {
     expect(controller.getSnapshot()).toMatchObject({ status: 'loading', sessionId: 'session-a', path: '/w/file.ts' })
 
     const text = gateway.nextReadText()
-    text.resolve({ status: 'ok', text: 'const x = 1', resourceId: brandResourceId('rid-.ts') })
+    text.resolve(okText('const x = 1', 'rid-.ts'))
     await expect(outcome).resolves.toBe('handled')
     const ready = controller.getSnapshot()
     if (ready.status !== 'ready') throw new Error('expected ready')
@@ -193,7 +228,7 @@ describe('file-preview-controller', () => {
     const outcome = h.controller.preview('session-a', '/w/file.ts')
     h.gateway.nextProbe().resolve(probePreview(availableDescriptor('.ts')))
     await flush()
-    h.gateway.nextReadText().resolve({ status: 'ok', text: 'hello', resourceId: brandResourceId('rid-.ts') })
+    h.gateway.nextReadText().resolve(okText('hello', 'rid-.ts'))
     await expect(outcome).resolves.toBe('handled')
 
     const delegateOutcome = h.controller.preview('session-a', '/w/some.pdf')
@@ -244,12 +279,12 @@ describe('file-preview-controller', () => {
     probeB.resolve(probePreview(availableDescriptor('.ts', 2)))
     await flush()
     const textB = gateway.nextReadText()
-    textB.resolve({ status: 'ok', text: 'B content', resourceId: brandResourceId('rid-b') })
+    textB.resolve(okText('B content', 'rid-b'))
     await expect(promiseB).resolves.toBe('handled')
     expect(controller.getSnapshot()).toMatchObject({ status: 'ready' })
 
     // Late A read resolves; it must never overwrite B and its resource is released.
-    textA.resolve({ status: 'ok', text: 'A content', resourceId: brandResourceId('rid-a') })
+    textA.resolve(okText('A content', 'rid-a'))
     await expect(promiseA).resolves.toBe('handled')
     const snapshot = controller.getSnapshot()
     if (snapshot.status !== 'ready') throw new Error('expected B ready')
@@ -269,7 +304,7 @@ describe('file-preview-controller', () => {
     expect(h.gateway.readTextCalls[0]?.aborted).toBe(true)
     expect(h.closeFileCount).toBe(1)
     // A late read resolve after close must not change state.
-    pendingText.resolve({ status: 'ok', text: 'late', resourceId: brandResourceId('rid-late') })
+    pendingText.resolve(okText('late', 'rid-late'))
     await promise
     expect(h.controller.getSnapshot()).toEqual({ status: 'closed' })
   })
@@ -359,7 +394,7 @@ describe('file-preview-controller', () => {
     const reprobe = gateway.nextProbe()
     reprobe.resolve(probePreview(availableDescriptor('.ts')))
     await Promise.resolve()
-    gateway.nextReadText().resolve({ status: 'ok', text: 'fresh', resourceId: brandResourceId('rid-.ts') })
+    gateway.nextReadText().resolve(okText('fresh', 'rid-.ts'))
     await expect(outcome).resolves.toBe('handled')
     const snapshot = controller.getSnapshot()
     if (snapshot.status !== 'ready') throw new Error('expected ready after refetch')
@@ -381,7 +416,7 @@ describe('file-preview-controller', () => {
     await Promise.resolve()
     const text = gateway.nextReadText()
     setSession('session-b')
-    text.resolve({ status: 'ok', text: 'x', resourceId: brandResourceId('rid-sess') })
+    text.resolve(okText('x', 'rid-sess'))
     await expect(promise).resolves.toBe('handled')
     // The received resource is released and never committed cross-session.
     expect(gateway.released).toContain('rid-.ts')
@@ -408,7 +443,7 @@ describe('file-preview-controller', () => {
     const readyOutcome = h.controller.preview('session-a', '/w/keep.ts')
     h.gateway.nextProbe().resolve(probePreview(availableDescriptor('.ts')))
     await flush()
-    h.gateway.nextReadText().resolve({ status: 'ok', text: 'keep', resourceId: brandResourceId('rid-keep') })
+    h.gateway.nextReadText().resolve(okText('keep', 'rid-keep'))
     await expect(readyOutcome).resolves.toBe('handled')
     expect(h.controller.getSnapshot()).toMatchObject({ status: 'ready' })
     h.controller.suspend()
@@ -422,7 +457,7 @@ describe('file-preview-controller', () => {
     const outcome = controller.preview('session-a', '/w/file.ts')
     gateway.nextProbe().resolve(probePreview(availableDescriptor('.ts')))
     await Promise.resolve()
-    gateway.nextReadText().resolve({ status: 'ok', text: 'x', resourceId: brandResourceId('rid-.ts') })
+    gateway.nextReadText().resolve(okText('x', 'rid-.ts'))
     await outcome
     await expect(controller.openExternally()).rejects.toThrow('system failed')
   })
@@ -432,7 +467,7 @@ describe('file-preview-controller', () => {
     const out1 = controller.preview('session-a', '/w/file.ts')
     gateway.nextProbe().resolve(probePreview(availableDescriptor('.ts')))
     await Promise.resolve()
-    gateway.nextReadText().resolve({ status: 'ok', text: 'v1', resourceId: brandResourceId('rid-.ts') })
+    gateway.nextReadText().resolve(okText('v1', 'rid-.ts'))
     await expect(out1).resolves.toBe('handled')
 
     const refreshPromise = controller.refresh()
@@ -440,7 +475,7 @@ describe('file-preview-controller', () => {
     const reprobe = gateway.nextProbe()
     reprobe.resolve(probePreview(availableDescriptor('.ts')))
     await Promise.resolve()
-    gateway.nextReadText().resolve({ status: 'ok', text: 'v2', resourceId: brandResourceId('rid-.ts') })
+    gateway.nextReadText().resolve(okText('v2', 'rid-.ts'))
     await expect(refreshPromise).resolves.toBe('handled')
     expect(systemPaths).toHaveLength(0)
   })
@@ -495,6 +530,149 @@ describe('file-preview-controller', () => {
     // No token exists, so no read was issued and nothing was released.
     expect(gateway.readTextCalls).toHaveLength(0)
     expect(gateway.released).toHaveLength(0)
+  })
+
+  it('updates the baseline revision after a successful save', async () => {
+    const h = makeHarness({ provider: TEXT_PROVIDER })
+    const load = h.controller.preview('session-a', '/w/file.md')
+    h.gateway.nextProbe().resolve(probePreview(availableDescriptor('.md')))
+    await flush()
+    h.gateway.nextReadText().resolve(okText('old', 'rid-.md'))
+    await load
+
+    const save = h.controller.saveText('new')
+    await flush()
+    expect(h.gateway.saveRequests[0]).toMatchObject({ path: '/w/file.md', text: 'new', revision: 'rev-1' })
+    h.gateway.nextSave().resolve({ status: 'ok', revision: brandRevision('rev-2'), text: 'new', size: 3 })
+    await expect(save).resolves.toMatchObject({ status: 'ok' })
+    expect(h.controller.getSaveState()).toMatchObject({ baselineRevision: 'rev-2', dirty: false, saved: true })
+  })
+
+  it('keeps newer typing dirty when an older save completes', async () => {
+    const h = makeHarness({ provider: TEXT_PROVIDER })
+    const load = h.controller.preview('session-a', '/w/file.md')
+    h.gateway.nextProbe().resolve(probePreview(availableDescriptor('.md')))
+    await flush()
+    h.gateway.nextReadText().resolve(okText('old', 'rid-.md'))
+    await load
+
+    const save = h.controller.saveText('draft-1')
+    await flush()
+    h.controller.updateDraft('draft-2')
+    h.gateway.nextSave().resolve({ status: 'ok', revision: brandRevision('rev-2'), text: 'draft-1', size: 7 })
+    await save
+    expect(h.controller.getSaveState()).toMatchObject({ baselineRevision: 'rev-2', draftText: 'draft-2', dirty: true })
+  })
+
+  it('serializes concurrent saves and uses the updated revision', async () => {
+    const h = makeHarness({ provider: TEXT_PROVIDER })
+    const load = h.controller.preview('session-a', '/w/file.md')
+    h.gateway.nextProbe().resolve(probePreview(availableDescriptor('.md')))
+    await flush()
+    h.gateway.nextReadText().resolve(okText('old', 'rid-.md'))
+    await load
+
+    const first = h.controller.saveText('one')
+    const second = h.controller.saveText('two')
+    await flush()
+    expect(h.gateway.saveRequests).toHaveLength(1)
+    h.gateway.nextSave().resolve({ status: 'ok', revision: brandRevision('rev-2'), text: 'one', size: 3 })
+    await first
+    await flush()
+    expect(h.gateway.saveRequests).toHaveLength(2)
+    expect(h.gateway.saveRequests[1]?.revision).toBe('rev-2')
+    h.gateway.nextSave().resolve({ status: 'ok', revision: brandRevision('rev-3'), text: 'two', size: 3 })
+    await second
+  })
+
+  it('keeps conflict in save state without replacing the ready panel snapshot', async () => {
+    const h = makeHarness({ provider: TEXT_PROVIDER })
+    const load = h.controller.preview('session-a', '/w/file.md')
+    h.gateway.nextProbe().resolve(probePreview(availableDescriptor('.md')))
+    await flush()
+    h.gateway.nextReadText().resolve(okText('old', 'rid-.md'))
+    await load
+    const before = h.controller.getSnapshot()
+
+    const save = h.controller.saveText('local')
+    await flush()
+    h.gateway.nextSave().resolve({ status: 'conflict', code: 'stale-version', message: 'changed' })
+    await save
+    expect(h.controller.getSnapshot()).toBe(before)
+    expect(h.controller.getSaveState()).toMatchObject({ dirty: true, saving: false, conflict: { code: 'stale-version' } })
+  })
+
+  it('guarded refresh waits for a dirty draft save before re-probing', async () => {
+    const h = makeHarness({ provider: TEXT_PROVIDER })
+    const load = h.controller.preview('session-a', '/w/file.md')
+    h.gateway.nextProbe().resolve(probePreview(availableDescriptor('.md')))
+    await flush()
+    h.gateway.nextReadText().resolve(okText('old', 'rid-.md'))
+    await load
+
+    h.controller.updateDraft('new')
+    const refresh = h.controller.refreshGuarded()
+    await flush()
+    // While the draft is dirty the refresh must not re-probe until the save settles.
+    expect(h.gateway.probeCalls).toHaveLength(1)
+    h.gateway.nextSave().resolve({ status: 'ok', revision: brandRevision('rev-2'), text: 'new', size: 3 })
+    await flush()
+    await flush()
+    expect(h.gateway.probeCalls).toHaveLength(2)
+    h.gateway.nextProbe().resolve({ status: 'delegate' })
+    await expect(refresh).resolves.toBe('delegate')
+  })
+
+  it('guarded close waits for a dirty draft save before closing', async () => {
+    const h = makeHarness({ provider: TEXT_PROVIDER })
+    const load = h.controller.preview('session-a', '/w/file.md')
+    h.gateway.nextProbe().resolve(probePreview(availableDescriptor('.md')))
+    await flush()
+    h.gateway.nextReadText().resolve(okText('old', 'rid-.md'))
+    await load
+
+    h.controller.updateDraft('newer')
+    const close = h.controller.closeGuarded()
+    await flush()
+    // The dirty draft blocks the close until its save settles.
+    expect(h.closeFileCount).toBe(0)
+    h.gateway.nextSave().resolve({ status: 'ok', revision: brandRevision('rev-3'), text: 'newer', size: 5 })
+    await expect(close).resolves.toBe(true)
+    expect(h.closeFileCount).toBe(1)
+  })
+
+  it('cancels guarded navigation on save failure', async () => {
+    const h = makeHarness({ provider: TEXT_PROVIDER })
+    const load = h.controller.preview('session-a', '/w/file.md')
+    h.gateway.nextProbe().resolve(probePreview(availableDescriptor('.md')))
+    await flush()
+    h.gateway.nextReadText().resolve(okText('old', 'rid-.md'))
+    await load
+    h.controller.updateDraft('new')
+
+    const close = h.controller.closeGuarded()
+    await flush()
+    h.gateway.nextSave().resolve({ status: 'error', code: 'denied', message: 'no', retryable: true })
+    await expect(close).resolves.toBe(false)
+    expect(h.controller.getSnapshot().status).toBe('ready')
+    expect(h.closeFileCount).toBe(0)
+  })
+
+  it('dispose aborts an in-flight save', async () => {
+    const h = makeHarness({ provider: TEXT_PROVIDER })
+    const load = h.controller.preview('session-a', '/w/file.md')
+    h.gateway.nextProbe().resolve(probePreview(availableDescriptor('.md')))
+    await flush()
+    h.gateway.nextReadText().resolve(okText('old', 'rid-.md'))
+    await load
+
+    const save = h.controller.saveText('new')
+    await flush()
+    const pending = h.gateway.nextSave()
+    await h.controller.dispose()
+    expect(h.gateway.saveRequests[0]?.signal.aborted).toBe(true)
+    pending.reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+    await expect(save).resolves.toMatchObject({ status: 'error', code: 'aborted' })
   })
 
   it('no requests are issued after dispose', async () => {

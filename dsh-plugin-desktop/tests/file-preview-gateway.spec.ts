@@ -1,12 +1,14 @@
 import { beforeAll, afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { FsError } from '@deepseek-ai/dsh-fs'
+import { FsError, FsVersion } from '@deepseek-ai/dsh-fs'
+import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox'
 import { mkdtemp, mkdir, symlink, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep, relative, isAbsolute } from 'node:path'
 import { posix } from 'node:path'
 import { DesktopFilePreviewGateway } from '../src/file-preview-gateway.ts'
 import type { FilePreviewFsSeam, FilePreviewFsTarget, FilePreviewGatewayConfig, FilePreviewLogger, WorkspaceMembership } from '../src/file-preview-gateway.ts'
-import { FilePreviewResourceId } from '../src/file-preview-contract.ts'
+import { FilePreviewResourceId, FilePreviewRevision } from '../src/file-preview-contract.ts'
+import type { FilePreviewTextResult } from '../src/file-preview-contract.ts'
 
 /** Byte helpers. */
 function bytes(text: string): Uint8Array {
@@ -49,6 +51,8 @@ class FakeFs implements FilePreviewFsSeam {
   files = new Map<string, { bytes: Uint8Array; version: string }>()
   directories = new Set<string>()
   readError: ((target: FilePreviewFsTarget) => never | void) | undefined
+  writeCount = 0
+  lastWritePolicy: SandboxExecutionPolicy | undefined
 
   private normalize(path: string, cwd?: string): string {
     const absolute = isAbsolute(path) ? path : posix.resolve(cwd ?? '/ws', path)
@@ -65,12 +69,12 @@ class FakeFs implements FilePreviewFsSeam {
     return String(child.targetKey).startsWith(`${String(parent.targetKey)}/`)
   }
 
-  async stat(target: FilePreviewFsTarget): Promise<{ version: unknown; type: 'file' | 'directory' | 'other'; size?: number } | undefined> {
+  async stat(target: FilePreviewFsTarget): Promise<{ version: FsVersion; type: 'file' | 'directory' | 'other'; size?: number } | undefined> {
     const key = String(target.targetKey)
-    if (this.directories.has(key)) return { version: 'v-dir', type: 'directory' }
+    if (this.directories.has(key)) return { version: FsVersion('v-dir'), type: 'directory' }
     const entry = this.files.get(key)
     if (entry === undefined) return undefined
-    return { version: entry.version, type: 'file', size: entry.bytes.byteLength }
+    return { version: FsVersion(entry.version), type: 'file', size: entry.bytes.byteLength }
   }
 
   async readBytes(target: FilePreviewFsTarget, _signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array> {
@@ -81,6 +85,34 @@ class FakeFs implements FilePreviewFsSeam {
     if (entry === undefined) throw new FsError('not found', 'FS_NOT_FOUND')
     if (entry.bytes.byteLength > maxBytes) throw new FsError('too large', 'FS_TOO_LARGE')
     return entry.bytes
+  }
+
+  async writeText(
+    target: FilePreviewFsTarget,
+    content: string,
+    expected: { kind: 'createIfAbsent' } | { kind: 'replaceIfVersion'; version: FsVersion } | undefined,
+    signal: AbortSignal | undefined,
+    policy: SandboxExecutionPolicy | undefined,
+  ): Promise<{ operation: 'create' | 'update'; version: FsVersion; before: string | null; after: string }> {
+    if (signal?.aborted) throw new FsError('aborted', 'FS_ABORTED')
+    // The gateway must always confine saves to workspace-write, never escalate.
+    if (policy !== undefined && policy.mode !== 'workspace-write') {
+      throw new FsError('sandbox denied', 'FS_SANDBOX_DENIED')
+    }
+    this.lastWritePolicy = policy
+    const key = String(target.targetKey)
+    const entry = this.files.get(key)
+    if (expected?.kind === 'replaceIfVersion' && (entry === undefined || entry.version !== String(expected.version))) {
+      throw new FsError('stale', 'FS_STALE_VERSION')
+    }
+    const nextVersion = `v${++this.writeCount}`
+    this.files.set(key, { bytes: new TextEncoder().encode(content), version: nextVersion })
+    return {
+      operation: entry === undefined ? 'create' : 'update',
+      version: FsVersion(nextVersion),
+      before: entry === undefined ? null : new TextDecoder().decode(entry.bytes),
+      after: content,
+    }
   }
 
   put(path: string, content: Uint8Array, version: string): void {
@@ -148,7 +180,7 @@ describe('file-preview-gateway (fake fs seam)', () => {
     if (result.descriptor.availability === 'available') {
       expect(result.descriptor.resourceId).toMatch(/^[A-Za-z0-9_-]{20,}$/)
       const text = await gateway.readText(result.descriptor.resourceId, signal)
-      expect(text).toEqual({ status: 'ok', text: 'hello world', resourceId: result.descriptor.resourceId })
+      expect(text).toMatchObject({ status: 'ok', text: 'hello world', resourceId: result.descriptor.resourceId, revision: expect.any(String) })
     }
   })
 
@@ -294,9 +326,9 @@ describe('file-preview-gateway (fake fs seam)', () => {
   })
 
   it('reads text exactly at the byte limit and treats bytes, not chars, as the bound', async () => {
-    // 'é' is 2 UTF-8 bytes; 3 chars = 6 bytes.
+    // '茅' is 2 UTF-8 bytes; 3 chars = 6 bytes.
     const fs = new FakeFs()
-    fs.put('/ws/multi.txt', bytes('ééé'), 'v1')
+    fs.put('/ws/multi.txt', bytes('茅茅茅'), 'v1')
     const registry = makeRegistry([{ path: '/ws', sessionIds: ['s1'] }])
     const { gateway } = createGateway({ fs, list: registry.list, cfg: config({ maxTextBytes: 6 }) })
 
@@ -305,7 +337,7 @@ describe('file-preview-gateway (fake fs seam)', () => {
     if (result.status !== 'preview') return
     if (result.descriptor.availability !== 'available') return
     const text = await gateway.readText(result.descriptor.resourceId, new AbortController().signal)
-    expect(text).toMatchObject({ status: 'ok', text: 'ééé' })
+    expect(text).toMatchObject({ status: 'ok', text: '茅茅茅' })
   })
 
   it('strips a leading BOM and returns clean text', async () => {
@@ -695,6 +727,143 @@ describe('file-preview-gateway (fake fs seam)', () => {
     expect(outcome).toBeInstanceOf(FsError)
   })
 
+  describe('file-preview save protocol', () => {
+    /** Probe and read `path`, returning the ok text result with its revision. */
+    async function loaded(sessionId: string, path: string, h: GatewayHarness): Promise<FilePreviewTextResult> {
+      const probe = await h.gateway.probe(sessionId, path, new AbortController().signal)
+      if (probe.status !== 'preview' || probe.descriptor.availability !== 'available') throw new Error('expected an available text resource')
+      return h.gateway.readText(probe.descriptor.resourceId, new AbortController().signal)
+    }
+
+    it('atomically saves a markdown file at the expected revision and reports a new revision', async () => {
+      const fs = new FakeFs()
+      fs.put('/ws/a/readme.md', bytes('# title'), 'v1')
+      const registry = makeRegistry([{ path: '/ws', sessionIds: ['s1'] }])
+      const h = createGateway({ fs, list: registry.list })
+      const read = await loaded('s1', '/ws/a/readme.md', h)
+      if (read.status !== 'ok') throw new Error('expected ok read')
+
+      const result = await h.gateway.saveText('s1', '/ws/a/readme.md', read.revision, '# title\n\nedited', new AbortController().signal)
+      expect(result.status).toBe('ok')
+      if (result.status === 'ok') {
+        expect(typeof result.revision).toBe('string')
+        expect(fs.files.get('/ws/a/readme.md')?.version).toBe('v1')
+      }
+    })
+
+    it('returns conflict and leaves the disk unchanged for a stale revision', async () => {
+      const fs = new FakeFs()
+      fs.put('/ws/a.md', bytes('v1'), 'v1')
+      const registry = makeRegistry([{ path: '/ws', sessionIds: ['s1'] }])
+      const h = createGateway({ fs, list: registry.list })
+      const read = await loaded('s1', '/ws/a.md', h)
+      if (read.status !== 'ok') throw new Error('expected ok read')
+      // An external/agent change bumps the on-disk version behind the reader.
+      fs.put('/ws/a.md', bytes('changed by agent'), 'v2')
+
+      const result = await h.gateway.saveText('s1', '/ws/a.md', read.revision, 'editor draft', new AbortController().signal)
+      expect(result.status).toBe('conflict')
+      if (result.status === 'conflict') expect(result.code).toBe('stale-version')
+      // The disk still holds the agent version.
+      expect(new TextDecoder().decode(fs.files.get('/ws/a.md')?.bytes)).toBe('changed by agent')
+      expect(fs.files.get('/ws/a.md')?.version).toBe('v2')
+    })
+
+    it('rejects a save whose target resolves outside the workspace', async () => {
+      const fs = new FakeFs()
+      fs.put('/ws/a.md', bytes('x'), 'v1')
+      fs.put('/outside/secret.md', bytes('secret'), 'v1')
+      const registry = makeRegistry([{ path: '/ws', sessionIds: ['s1'] }])
+      const h = createGateway({ fs, list: registry.list })
+
+      const result = await h.gateway.saveText('s1', '/outside/secret.md', FilePreviewRevision('v1'), 'overwrite', new AbortController().signal)
+      expect(result).toMatchObject({ status: 'error', code: 'outside-workspace' })
+      expect(new TextDecoder().decode(fs.files.get('/outside/secret.md')?.bytes)).toBe('secret')
+    })
+
+    it('rejects saving an MDX file through the plain markdown endpoint', async () => {
+      const fs = new FakeFs()
+      fs.put('/ws/comp.mdx', bytes('# hi'), 'v1')
+      const registry = makeRegistry([{ path: '/ws', sessionIds: ['s1'] }])
+      const h = createGateway({ fs, list: registry.list })
+
+      const result = await h.gateway.saveText('s1', '/ws/comp.mdx', FilePreviewRevision('v1'), '# changed', new AbortController().signal)
+      expect(result).toMatchObject({ status: 'error', code: 'unsupported-format' })
+    })
+
+    it('rejects a save whose UTF-8 content exceeds the text limit', async () => {
+      const fs = new FakeFs()
+      fs.put('/ws/a.md', bytes('x'), 'v1')
+      const registry = makeRegistry([{ path: '/ws', sessionIds: ['s1'] }])
+      const h = createGateway({ fs, list: registry.list, cfg: config({ maxTextBytes: 10 }) })
+
+      const result = await h.gateway.saveText('s1', '/ws/a.md', FilePreviewRevision('v1'), 'x'.repeat(11), new AbortController().signal)
+      expect(result).toMatchObject({ status: 'error', code: 'content-too-large' })
+    })
+
+    it('round-trips Chinese, multibyte, and LF line endings', async () => {
+      const fs = new FakeFs()
+      fs.put('/ws/zh.md', bytes('你好'), 'v1')
+      const registry = makeRegistry([{ path: '/ws', sessionIds: ['s1'] }])
+      const h = createGateway({ fs, list: registry.list })
+      const read = await loaded('s1', '/ws/zh.md', h)
+      if (read.status !== 'ok') throw new Error('expected ok read')
+
+      const content = '# 标题\n\n- 列表项\n- 第二项\n中文内容\n'
+      const result = await h.gateway.saveText('s1', '/ws/zh.md', read.revision, content, new AbortController().signal)
+      expect(result.status).toBe('ok')
+      expect(new TextDecoder().decode(fs.files.get('/ws/zh.md')?.bytes)).toBe(content)
+    })
+
+    it('authorizes a subagent save through the ancestor workspace', async () => {
+      const fs = new FakeFs()
+      fs.put('/ws/sub/child.md', bytes('x'), 'v1')
+      const registry = makeRegistry([{ path: '/ws', sessionIds: ['root-session'] }])
+      const trace = async () => ({
+        target: { header: { origin: 'subagent' as const, parentSession: 'parent-session' } },
+        ancestors: [{ header: { id: 'parent-session' } }, { header: { id: 'root-session' } }],
+      })
+      const h = createGateway({ fs, list: registry.list, trace })
+      const read = await loaded('sub-agent', '/ws/sub/child.md', h)
+      if (read.status !== 'ok') throw new Error('expected ok read')
+
+      const result = await h.gateway.saveText('sub-agent', '/ws/sub/child.md', read.revision, 'updated', new AbortController().signal)
+      expect(result.status).toBe('ok')
+    })
+
+    it('passes a workspace-write sandbox policy, never danger-full-access', async () => {
+      const fs = new FakeFs()
+      fs.put('/ws/a.md', bytes('x'), 'v1')
+      const registry = makeRegistry([{ path: '/ws', sessionIds: ['s1'] }])
+      const h = createGateway({ fs, list: registry.list })
+      const read = await loaded('s1', '/ws/a.md', h)
+      if (read.status !== 'ok') throw new Error('expected ok read')
+
+      const result = await h.gateway.saveText('s1', '/ws/a.md', read.revision, 'new', new AbortController().signal)
+      expect(result.status).toBe('ok')
+      // The fake refuses any policy other than workspace-write; a successful
+      // write therefore proves the gateway confined the save.
+      expect(fs.lastWritePolicy?.mode).toBe('workspace-write')
+      expect(fs.lastWritePolicy?.workspaceRoot).toBe('/ws')
+      expect(fs.lastWritePolicy?.sessionId).toBeDefined()
+    })
+
+    it('aborts a save with no partial write when the signal is already aborted', async () => {
+      const fs = new FakeFs()
+      fs.put('/ws/a.md', bytes('original'), 'v1')
+      const registry = makeRegistry([{ path: '/ws', sessionIds: ['s1'] }])
+      const h = createGateway({ fs, list: registry.list })
+
+      const controller = new AbortController()
+      controller.abort()
+      await expect(
+        h.gateway.saveText('s1', '/ws/a.md', FilePreviewRevision('v1'), 'overwrite', controller.signal),
+      ).rejects.toMatchObject({ code: 'FS_ABORTED' })
+      // An abort is a cancellation that never reaches the disk.
+      expect(new TextDecoder().decode(fs.files.get('/ws/a.md')?.bytes)).toBe('original')
+    })
+  })
+
   describe('RPC dispatch', () => {
     it('returns a structured bad request for an unknown endpoint', async () => {
       const { gateway } = createGateway()
@@ -789,7 +958,7 @@ function invokeImageRequest(
   return gateway.handleImageRequest(req, res).then(() => response)
 }
 
-/** Real filesystem smoke checks for symlink/junction escape (design §12.1). */
+/** Real filesystem smoke checks for symlink/junction escape (design 搂12.1). */
 describe('file-preview-gateway (real local filesystem escapes)', () => {
   let root: string
   let workspace: string
@@ -856,7 +1025,7 @@ describe('file-preview-gateway (real local filesystem escapes)', () => {
  * semantics the gateway relies on.
  */
 async function createLocalFs(base: string): Promise<FilePreviewFsSeam> {
-  const { realpath, stat, readFile } = await import('node:fs/promises')
+  const { realpath, stat, readFile, writeFile } = await import('node:fs/promises')
   return {
     async resolve(path: string, opts?: { cwd?: string }): Promise<FilePreviewFsTarget> {
       const abs = isAbsolute(path) ? path : resolve(opts?.cwd ?? base, path)
@@ -870,9 +1039,9 @@ async function createLocalFs(base: string): Promise<FilePreviewFsSeam> {
     async stat(target: FilePreviewFsTarget) {
       try {
         const info = await stat(String(target.targetKey))
-        if (info.isFile()) return { version: `${info.mtimeMs}-${info.size}`, type: 'file' as const, size: info.size }
-        if (info.isDirectory()) return { version: `${info.mtimeMs}`, type: 'directory' as const }
-        return { version: `${info.mtimeMs}`, type: 'other' as const }
+        if (info.isFile()) return { version: FsVersion(`${info.mtimeMs}-${info.size}`), type: 'file' as const, size: info.size }
+        if (info.isDirectory()) return { version: FsVersion(`${info.mtimeMs}`), type: 'directory' as const }
+        return { version: FsVersion(`${info.mtimeMs}`), type: 'other' as const }
       } catch {
         return undefined
       }
@@ -884,6 +1053,32 @@ async function createLocalFs(base: string): Promise<FilePreviewFsSeam> {
       const buf = await readFile(String(target.targetKey))
       if (signal?.aborted) throw new FsError('aborted', 'FS_ABORTED')
       return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
+    },
+    async writeText(target, content, expected, signal, sandboxPolicy) {
+      if (signal?.aborted) throw new FsError('aborted', 'FS_ABORTED')
+      const key = String(target.targetKey)
+      let before: string | null = null
+      try {
+        before = await readFile(key, 'utf-8')
+      } catch {
+        before = null
+      }
+      const existingVersion = before === null ? undefined : `${(await stat(key))?.mtimeMs}-${(await stat(key))?.size}`
+      if (expected?.kind === 'replaceIfVersion' && (before === null || existingVersion !== String(expected.version))) {
+        throw new FsError('stale', 'FS_STALE_VERSION')
+      }
+      if (sandboxPolicy !== undefined && sandboxPolicy.mode !== 'workspace-write') {
+        throw new FsError('sandbox denied', 'FS_SANDBOX_DENIED')
+      }
+      await writeFile(key, content, 'utf-8')
+      if (signal?.aborted) throw new FsError('aborted', 'FS_ABORTED')
+      const after = await stat(key)
+      return {
+        operation: before === null ? 'create' : 'update',
+        version: FsVersion(`${after.mtimeMs}-${after.size}`),
+        before,
+        after: content,
+      }
     },
   }
 }

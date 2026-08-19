@@ -16,8 +16,8 @@ import {
   IconRightUpOutline16,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { FilePreviewDescriptor } from '../../file-preview-contract.ts'
-import type { FilePreviewSnapshot } from './controller.ts'
+import type { FilePreviewDescriptor, FilePreviewSaveTextResult } from '../../file-preview-contract.ts'
+import type { FilePreviewSaveState, FilePreviewSnapshot } from './controller.ts'
 import type { FilePreviewRegistry } from './registry.ts'
 
 /** Props the advanced frame wires to the panel. */
@@ -26,6 +26,14 @@ export interface FilePreviewPanelProps {
   snapshot: FilePreviewSnapshot
   /** Provider registry used to resolve the render component by id. */
   registry: FilePreviewRegistry
+  /** Current editor/save state; omitted by read-only embeddings. */
+  saveState?: FilePreviewSaveState
+  /** Report an updated full-text draft. */
+  onDraftChange?(text: string): void
+  /** Queue a save for a full-text draft. */
+  onSaveRequest?(text: string): Promise<FilePreviewSaveTextResult>
+  /** Clear conflict/error UI while retaining the local draft. */
+  onContinueEditing?(): void
   /** Refresh the current file (re-run preview). */
   onRefresh(): void
   /** Close the file surface. */
@@ -94,7 +102,17 @@ class ProviderErrorBoundary extends Component<{ onOpenExternally(): void; childr
  * @param props - panel props.
  * @returns the file view panel.
  */
-export function FilePreviewPanel({ snapshot, registry, onRefresh, onClose, onOpenExternally }: FilePreviewPanelProps) {
+export function FilePreviewPanel({
+  snapshot,
+  registry,
+  saveState,
+  onDraftChange,
+  onSaveRequest,
+  onContinueEditing,
+  onRefresh,
+  onClose,
+  onOpenExternally,
+}: FilePreviewPanelProps) {
   const [systemOpenFailed, setSystemOpenFailed] = useState(false)
 
   if (snapshot.status === 'closed') {
@@ -140,11 +158,34 @@ export function FilePreviewPanel({ snapshot, registry, onRefresh, onClose, onOpe
             <provider.Component
               descriptor={snapshot.descriptor}
               content={snapshot.content}
+              saveState={saveState}
+              onDraftChange={onDraftChange}
+              onSaveRequest={onSaveRequest}
               onOpenExternally={openExternally}
             />
           )}
       </ProviderErrorBoundary>
     )
+  }
+
+  const editable = snapshot.status === 'ready'
+    && snapshot.providerId === 'desktop.markdown'
+    && snapshot.content.kind === 'text'
+    && saveState?.draftText !== undefined
+  const saveLabel = saveState?.conflict !== undefined
+    ? '文件冲突'
+    : saveState?.saving === true
+      ? '保存中'
+      : saveState?.lastSaveError !== undefined
+        ? '保存失败'
+        : saveState?.dirty === true
+          ? '未保存'
+          : '已保存'
+  const saveDraft = (): void => {
+    if (saveState?.draftText !== undefined) void onSaveRequest?.(saveState.draftText)
+  }
+  const copyDraft = (): void => {
+    if (saveState?.draftText !== undefined) void navigator.clipboard?.writeText(saveState.draftText)
   }
 
   return (
@@ -153,6 +194,21 @@ export function FilePreviewPanel({ snapshot, registry, onRefresh, onClose, onOpe
         <div className="dshDesktopFileTitle">{fileName}</div>
         <div className="dshDesktopFilePath" title={path}>{path}</div>
         <div className="dshDesktopFileActions">
+          {editable && (
+            <>
+              <span className={`dshDesktopSaveStatus ${saveState.conflict !== undefined || saveState.lastSaveError !== undefined ? 'error' : ''}`} role="status">
+                {saveLabel}
+              </span>
+              <button
+                type="button"
+                className="dshDesktopSaveButton"
+                disabled={saveState.saving || !saveState.dirty || saveState.conflict !== undefined}
+                onClick={saveDraft}
+              >
+                保存
+              </button>
+            </>
+          )}
           <Tooltip label="刷新" side="bottom">
             <button type="button" className="dshDesktopIconButton" aria-label="刷新" onClick={onRefresh}>
               <IconRefreshOutline16 size={14} />
@@ -172,6 +228,16 @@ export function FilePreviewPanel({ snapshot, registry, onRefresh, onClose, onOpe
       </header>
       {systemOpenFailed && (
         <div className="dshDesktopNotice" role="status">系统打开失败</div>
+      )}
+      {editable && saveState.conflict !== undefined && (
+        <div className="dshDesktopConflictBar" role="alert">
+          <span>{saveState.conflict.message || '文件已在磁盘上更改'}</span>
+          <div className="dshDesktopConflictActions">
+            <button type="button" onClick={onRefresh}>重新加载磁盘版本</button>
+            <button type="button" onClick={copyDraft}>复制本地草稿</button>
+            <button type="button" onClick={onContinueEditing}>继续编辑</button>
+          </div>
+        </div>
       )}
       <div className="dshDesktopFileContent">{content}</div>
     </div>

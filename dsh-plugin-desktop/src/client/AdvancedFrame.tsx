@@ -35,6 +35,9 @@ export function AdvancedFrame({ layout, platform, filePreview, filePreviewRegist
   const subscribeFileView = useCallback((listener: () => void) => filePreview.subscribe(listener), [filePreview])
   const readFileView = useCallback(() => filePreview.getSnapshot(), [filePreview])
   const fileView = useSyncExternalStore(subscribeFileView, readFileView)
+  const subscribeSaveState = useCallback((listener: () => void) => filePreview.subscribeSaveState(listener), [filePreview])
+  const readSaveState = useCallback(() => filePreview.getSaveState(), [filePreview])
+  const fileSaveState = useSyncExternalStore(subscribeSaveState, readSaveState)
   const frameRef = useRef<HTMLDivElement>(null)
   const [viewport, setViewport] = useState(() => window.innerWidth)
   const currentSessionId = useSessions((state) => state.current)
@@ -110,8 +113,12 @@ export function AdvancedFrame({ layout, platform, filePreview, filePreviewRegist
           <FilePreviewPanel
             snapshot={fileView}
             registry={filePreviewRegistry}
-            onRefresh={() => { void filePreview.refresh() }}
-            onClose={() => { filePreview.close() }}
+            saveState={fileSaveState}
+            onDraftChange={(text) => { filePreview.updateDraft(text) }}
+            onSaveRequest={(text) => filePreview.saveText(text)}
+            onContinueEditing={() => { filePreview.continueEditing() }}
+            onRefresh={() => { void filePreview.refreshGuarded() }}
+            onClose={() => { void filePreview.closeGuarded() }}
             onOpenExternally={() => filePreview.openExternally()}
           />
         </section>
