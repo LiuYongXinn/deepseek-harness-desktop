@@ -26,6 +26,13 @@ const config: DesktopConfig = {
     resourceTtlMs: 60_000,
     maxResources: 64,
   },
+  clipboard: {
+    maxItems: 32,
+    maxPathChars: 4096,
+    maxPayloadBytes: 1024 * 1024,
+    leaseTtlMs: 60_000,
+    maxLeases: 128,
+  },
 }
 
 afterEach(() => { vi.useRealTimers() })
@@ -278,37 +285,39 @@ describe('desktop Host plugin', () => {
     expect(() => options?.validate?.({ mode: 'compatibility' })).not.toThrow()
   })
 
-  it('registers exactly one file-preview RPC channel and one binary route in advanced mode', () => {
+  it('registers the clipboard RPC in both modes and file-preview only in advanced mode', () => {
     const harness = createHarness()
     apply(harness.ctx, { ...config, mode: 'advanced' })
 
-    expect(harness.channels).toEqual(['/desktop-file-preview'])
+    // Clipboard registers in both modes; file-preview is advanced-only.
+    expect(harness.channels).toEqual(['/desktop-clipboard', '/desktop-file-preview'])
     expect(harness.routes).toEqual([{ kind: 'prefix', path: '/desktop-file-preview-content' }])
   })
 
-  it('does not register any file-preview RPC channel or binary route in compatibility mode', () => {
+  it('registers the clipboard RPC but no file-preview channel or binary route in compatibility mode', () => {
     const harness = createHarness()
     apply(harness.ctx, config)
 
-    expect(harness.channels).toEqual([])
+    expect(harness.channels).toEqual(['/desktop-clipboard'])
     expect(harness.routes).toEqual([])
   })
 
-  it('invalidates the RPC handler and removes the route when the fiber disposers run', async () => {
+  it('invalidates both RPC handlers and removes the route when the fiber disposers run', async () => {
     const harness = createHarness()
     apply(harness.ctx, { ...config, mode: 'advanced' })
 
-    const handler = harness.rpcHandlers.get('/desktop-file-preview')
-    expect(handler).toBeDefined()
+    expect(harness.rpcHandlers.get('/desktop-clipboard')).toBeDefined()
+    expect(harness.rpcHandlers.get('/desktop-file-preview')).toBeDefined()
     expect(harness.routes).toHaveLength(1)
-    expect(harness.channels).toHaveLength(1)
+    expect(harness.channels).toHaveLength(2)
 
     // Fiber teardown runs disposers in reverse registration order.
     for (const disposer of [...harness.disposers].reverse()) await disposer()
 
-    // The route and channel registrations are removed.
+    // Both channel registrations and the route are removed.
     expect(harness.routes).toEqual([])
     expect(harness.channels).toEqual([])
+    expect(harness.rpcHandlers.has('/desktop-clipboard')).toBe(false)
     expect(harness.rpcHandlers.has('/desktop-file-preview')).toBe(false)
   })
 

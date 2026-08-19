@@ -23,6 +23,9 @@ import {
   FILE_PREVIEW_RPC_CHANNEL,
 } from './file-preview-contract.ts'
 import type { FilePreviewGatewayConfig } from './file-preview-gateway.ts'
+import { DesktopClipboardGateway } from './clipboard/gateway.ts'
+import type { ClipboardGatewayConfig } from './clipboard/gateway.ts'
+import { DESKTOP_CLIPBOARD_RPC_CHANNEL } from './clipboard/contract.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -86,6 +89,8 @@ export interface Config {
   minHeight: number
   /** Advanced-mode file-preview gateway limits. */
   filePreview: FilePreviewGatewayConfig
+  /** Clipboard paste gateway deployment limits, registered in BOTH shell modes. */
+  clipboard: ClipboardGatewayConfig
 }
 
 /** Upper bounds the schemastery schema enforces on file-preview limits. */
@@ -102,6 +107,22 @@ const FilePreviewConfig: z<FilePreviewGatewayConfig> = z.object({
   maxResources: z.natural().min(1).max(FILE_PREVIEW_MAX_RESOURCES).default(64),
 })
 
+/** Upper bounds the schemastery schema enforces on clipboard paste limits. */
+const CLIPBOARD_MAX_ITEMS = 1024
+const CLIPBOARD_MAX_PATH_CHARS = 65536
+const CLIPBOARD_MAX_PAYLOAD_BYTES = 64 * 1024 * 1024
+const CLIPBOARD_MAX_TTL_MS = 60 * 60 * 1000
+const CLIPBOARD_MAX_LEASES = 10_000
+
+/** Schemastery schema for the clipboard paste gateway limits. */
+const ClipboardConfig: z<ClipboardGatewayConfig> = z.object({
+  maxItems: z.natural().min(1).max(CLIPBOARD_MAX_ITEMS).default(32),
+  maxPathChars: z.natural().min(1).max(CLIPBOARD_MAX_PATH_CHARS).default(4096),
+  maxPayloadBytes: z.natural().min(1).max(CLIPBOARD_MAX_PAYLOAD_BYTES).default(1024 * 1024),
+  leaseTtlMs: z.natural().min(1).max(CLIPBOARD_MAX_TTL_MS).default(60_000),
+  maxLeases: z.natural().min(1).max(CLIPBOARD_MAX_LEASES).default(128),
+})
+
 /** Validated native window configuration. */
 export const Config: z<Config> = z.object({
   mode: z.union(['compatibility', 'advanced'] as const).default(DEFAULT_SHELL_MODE),
@@ -114,6 +135,13 @@ export const Config: z<Config> = z.object({
     maxImageBytes: 1024 * 1024 * 20,
     resourceTtlMs: 60_000,
     maxResources: 64,
+  }),
+  clipboard: ClipboardConfig.default({
+    maxItems: 32,
+    maxPathChars: 4096,
+    maxPayloadBytes: 1024 * 1024,
+    leaseTtlMs: 60_000,
+    maxLeases: 128,
   }),
 })
 
@@ -189,6 +217,7 @@ export function apply(ctx: Context, config: Config): void {
       if (pending !== undefined) clearImmediate(pending)
     }
   }, 'dsh-plugin-desktop: restart after mode change')
+  installClipboardGateway(ctx, config.clipboard)
   if (config.mode === 'advanced') {
     ctx.on('settings/updated', (namespace, next) => {
       if (namespace !== UI_THEME_SETTINGS_NAMESPACE) return
@@ -261,5 +290,41 @@ function installFilePreviewGateway(ctx: Context, filePreview: FilePreviewGateway
   ctx.effect(
     () => ctx.connection.rpc.handle(FILE_PREVIEW_RPC_CHANNEL, handler, { authority: 'loopback' }),
     'dsh-plugin-desktop: file-preview RPC',
+  )
+}
+
+/**
+ * Install the clipboard paste gateway: create the instance from the injected
+ * services, then register, in order, the lease-cleanup effect and the loopback
+ * RPC handler. Unlike the file-preview gateway, the clipboard gateway registers
+ * in BOTH shell modes per the P0 mode matrix (design §11): compatibility mode
+ * must still expose the native clipboard capability while the upstream client
+ * remains unmodified.
+ * @param ctx - Host context injecting the connection/workspace/query/fs/desktop services.
+ * @param config - validated clipboard paste gateway limits.
+ */
+function installClipboardGateway(ctx: Context, config: ClipboardGatewayConfig): void {
+  const traceSession = ctx.sessionQuery === undefined
+    ? undefined
+    : (sessionId: string, signal: AbortSignal) => ctx.sessionQuery.traceSession(SessionId(sessionId), signal)
+  const gateway = new DesktopClipboardGateway(
+    ctx.fs,
+    () => ctx.workspaceRegistry.list(),
+    traceSession,
+    () => ctx.desktopRuntime.readNativeClipboardSnapshot(),
+    ctx.desktopRuntime.platform,
+    ctx.logger,
+    config,
+  )
+
+  ctx.effect(
+    () => () => gateway.dispose(),
+    'dsh-plugin-desktop: clipboard lease cleanup',
+  )
+
+  const handler: ConnectionRpcHandler = (endpoint, payload, signal) => gateway.dispatch(endpoint, payload, signal)
+  ctx.effect(
+    () => ctx.connection.rpc.handle(DESKTOP_CLIPBOARD_RPC_CHANNEL, handler, { authority: 'loopback' }),
+    'dsh-plugin-desktop: clipboard RPC',
   )
 }
