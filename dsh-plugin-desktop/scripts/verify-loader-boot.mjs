@@ -23,6 +23,7 @@ const RUNNER_ENVIRONMENT_NAMES = new Set([
   'NPM_CONFIG_DISTURL',
 ])
 const home = mkdtempSync(join(tmpdir(), 'dsh-desktop-loader-'))
+const clientBundle = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
 let ctx
 let mounted
 let mountedSpec
@@ -32,6 +33,9 @@ const runnerEnvironment = Object.entries(process.env)
   .filter(([key]) => RUNNER_ENVIRONMENT_NAMES.has(key.toUpperCase()))
 
 try {
+  if (/require\(["']node:/u.test(clientBundle)) {
+    throw new Error('dsh-plugin-desktop: browser client bundle contains a Node builtin require')
+  }
   for (const [key] of runnerEnvironment) delete process.env[key]
   const launchEnvironment = createLaunchEnvironmentSnapshot([{
     source: 'process',

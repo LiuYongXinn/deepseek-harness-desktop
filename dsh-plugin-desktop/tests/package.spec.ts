@@ -134,6 +134,13 @@ describe('published package surface', () => {
     expect(manifest.dependencies).not.toHaveProperty('react-dom')
   })
 
+  it('keeps Node built-ins out of the browser client bundle', () => {
+    const config = readFileSync(new URL('tsdown.config.ts', packageRoot), 'utf8')
+    expect(config).toContain("'#minproc': fileURLToPath(new URL('node_modules/vfile/lib/minproc.browser.js', import.meta.url))")
+    expect(config).toContain("'#minpath': fileURLToPath(new URL('node_modules/vfile/lib/minpath.browser.js', import.meta.url))")
+    expect(config).toContain("'#minurl': fileURLToPath(new URL('node_modules/vfile/lib/minurl.browser.js', import.meta.url))")
+  })
+
   it('builds public Host plugins and their private native bootstraps', () => {
     const config = readFileSync(new URL('tsdown.config.ts', packageRoot), 'utf8')
 

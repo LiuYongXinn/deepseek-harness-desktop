@@ -1,6 +1,19 @@
 import { defineConfig } from 'tsdown'
+import { fileURLToPath } from 'node:url'
 
 const PACKAGE_NAME = 'dsh-plugin-desktop'
+
+/**
+ * `vfile` exposes browser implementations for these private package imports,
+ * but the CJS client build resolves conditional exports with Node conditions.
+ * Resolve them explicitly so the browser bundle never asks the module table for
+ * Node built-ins such as `node:process`.
+ */
+const VFILE_BROWSER_IMPORTS: Record<string, string> = {
+  '#minpath': fileURLToPath(new URL('node_modules/vfile/lib/minpath.browser.js', import.meta.url)),
+  '#minproc': fileURLToPath(new URL('node_modules/vfile/lib/minproc.browser.js', import.meta.url)),
+  '#minurl': fileURLToPath(new URL('node_modules/vfile/lib/minurl.browser.js', import.meta.url)),
+}
 
 export default defineConfig([
   {
@@ -74,6 +87,15 @@ export default defineConfig([
       '@deepseek-ai/dsh-client-ui-primitives',
     ],
     noExternal: (id: string) => id.startsWith('@deepseek-ai/') ? undefined : true,
+    plugins: [{
+      name: 'dsh-vfile-browser-conditions',
+      resolveId(source: string, importer?: string) {
+        const isVfileImporter = importer !== undefined
+          && /(?:^|[/\\])node_modules[/\\]vfile[/\\]/u.test(importer)
+        if (!isVfileImporter) return null
+        return VFILE_BROWSER_IMPORTS[source] ?? null
+      },
+    }],
     outputOptions: {
       entryFileNames: 'client.js',
       banner: `window.__ModuleLoader__.load({ id: ${JSON.stringify(PACKAGE_NAME)}, factory: (require) => {`,
