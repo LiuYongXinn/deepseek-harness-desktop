@@ -10,5 +10,7 @@ node_modules/
 .build/
 
 dsh-plugin-desktop/dist/
+dsh-plugin-desktop/dist-build/
+dsh-plugin-desktop/dist-nsis/
 dsh-plugin-desktop/lib/
 .idea/
