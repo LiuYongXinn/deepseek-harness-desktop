@@ -307,7 +307,7 @@ describe('published package surface', () => {
     expect(manifest.dependencies?.pnpm).toBe('11.7.0')
   })
 
-  it('resolves electron-builder through the pinned app-builder-lib keychain patch', () => {
+  it('resolves electron-builder through the pinned app-builder-lib patch', () => {
     const patchResolution = 'patch:app-builder-lib@npm%3A26.15.3#./patches/app-builder-lib@26.15.3.patch'
     const lockfile = readFileSync(new URL('yarn.lock', workspaceRoot), 'utf8')
     const patch = readFileSync(new URL('patches/app-builder-lib@26.15.3.patch', workspaceRoot), 'utf8')
@@ -315,7 +315,9 @@ describe('published package surface', () => {
     const electronBuilderManifest = workspaceRequire.resolve('electron-builder/package.json')
     const electronBuilderRequire = createRequire(electronBuilderManifest)
     const appBuilderManifest = electronBuilderRequire.resolve('app-builder-lib/package.json')
-    const installedCodeSign = readFileSync(join(dirname(appBuilderManifest), 'out/codeSign/macCodeSign.js'), 'utf8')
+    const appBuilderRoot = dirname(appBuilderManifest)
+    const installedCodeSign = readFileSync(join(appBuilderRoot, 'out/codeSign/macCodeSign.js'), 'utf8')
+    const installedElectronGet = readFileSync(join(appBuilderRoot, 'out/util/electronGet.js'), 'utf8')
 
     expect(workspaceManifest.resolutions).toMatchObject({
       'app-builder-lib@npm:26.15.3': patchResolution,
@@ -323,8 +325,14 @@ describe('published package surface', () => {
     expect(lockfile).toContain('app-builder-lib@patch:app-builder-lib@npm%3A26.15.3#./patches/app-builder-lib@26.15.3.patch')
     expect(patch).toContain('importCerts(keychainFile, certPaths, cscPasswords, keychainPassword)')
     expect(patch).toContain('"-k", keychainPassword, keychainFile')
+    expect(patch).toContain('["EPERM", "EACCES", "EBUSY"].includes(code)')
+    expect(patch).toContain('attempt >= 8')
+    expect(patch).toContain('extracted directory rename temporarily blocked, retrying')
     expect(installedCodeSign).toContain('importCerts(keychainFile, certPaths, cscPasswords, keychainPassword)')
     expect(installedCodeSign).toContain('"-k", keychainPassword, keychainFile')
+    expect(installedElectronGet).toContain('["EPERM", "EACCES", "EBUSY"].includes(code)')
+    expect(installedElectronGet).toContain('attempt >= 8')
+    expect(installedElectronGet).toContain('extracted directory rename temporarily blocked, retrying')
   })
 
   it('starts restricted Windows shells with a hidden console show state', () => {

@@ -22,3 +22,30 @@ index 3bde9755d703a70fc3a45c048c249559fef78d82..9db6a66ee59dbe28a167683b791d8357
      }
      return {
          keychainFile,
+diff --git a/out/util/electronGet.js b/out/util/electronGet.js
+--- a/out/util/electronGet.js
++++ b/out/util/electronGet.js
+@@ -183,8 +183,22 @@ async function extractArchive(file, dir) {
+         if (extractedFiles.length === 0) {
+             throw new Error(`Extraction of ${path.basename(file)} produced no files`);
+         }
+         await fs.rm(dir, { recursive: true, force: true });
+-        await fs.rename(tmpDir, dir);
++        for (let attempt = 1;; attempt++) {
++            try {
++                await fs.rename(tmpDir, dir);
++                break;
++            }
++            catch (error) {
++                const code = error === null || error === void 0 ? void 0 : error.code;
++                if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(code) || attempt >= 8) {
++                    throw error;
++                }
++                const delay = 250 * attempt;
++                builder_util_1.log.warn({ code, attempt, delay, tmpDir, dir }, "extracted directory rename temporarily blocked, retrying");
++                await new Promise(resolve => setTimeout(resolve, delay));
++            }
++        }
+     }
+     finally {
+         await release().catch(err => builder_util_1.log.warn({ err }, "failed to release lockfile"));

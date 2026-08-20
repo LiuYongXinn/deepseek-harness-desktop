@@ -17,7 +17,7 @@ Corepack / Yarn 4.18.0），结论：**`corepack yarn dist:win` 一条命令即�
 | 解包应用 | `dsh-plugin-desktop/dist/win-unpacked/DSH Desktop.exe` | 冒烟测试用，不由安装器生成 |
 | 更新元数据 | `dsh-plugin-desktop/dist/DSH-Desktop-<version>-x64-Setup.exe.blockmap`、`dist/latest.yml` | 应用内更新通道使用（含 sha512/size/版本号） |
 
-`<version>` 来自 `dsh-plugin-desktop/package.json` 的 `version` 字段（当前 `2.0.0`）。
+`<version>` 来自 `dsh-plugin-desktop/package.json` 的 `version` 字段。
 
 ---
 
@@ -65,6 +65,9 @@ corepack yarn dist:win
      捆绑 `pnpm` 等）与 `app.asar.unpacked` 物理条目（含
      `node_modules/node-pty/prebuilds/win32-x64/*` 与 `pnpm/bin/pnpm.mjs`）。
    - 应用 `@electron/fuses`，写入 asar 完整性资源。
+   - 固定的 `app-builder-lib` 补丁只会在解压后目录重命名遇到 Windows 短暂
+     `EPERM`、`EACCES` 或 `EBUSY` 时执行有限退避（最多重试七次）；其他文件系统
+     错误仍会立即中止。
 3. **产物校验** `scripts/verify-win-installer.ts`：对安装包与解包 exe 校验
    Windows PE 头（MZ 魔数 + PE 签名），通过后打印
    `Windows installer verification passed: ...`。

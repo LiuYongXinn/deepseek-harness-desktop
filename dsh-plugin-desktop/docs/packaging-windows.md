@@ -19,7 +19,7 @@ a GUI).
 | Unpacked app | `dsh-plugin-desktop/dist/win-unpacked/DSH Desktop.exe` | Smoke-test entry point, not produced by the installer |
 | Update metadata | `dsh-plugin-desktop/dist/DSH-Desktop-<version>-x64-Setup.exe.blockmap`, `dist/latest.yml` | Consumed by the in-app update channel (sha512/size/version) |
 
-`<version>` is taken from `version` in `dsh-plugin-desktop/package.json` (currently `2.0.0`).
+`<version>` is taken from `version` in `dsh-plugin-desktop/package.json`.
 
 ---
 
@@ -73,6 +73,9 @@ corepack yarn dist:win
      `app.asar.unpacked` entries (including
      `node_modules/node-pty/prebuilds/win32-x64/*` and `pnpm/bin/pnpm.mjs`).
    - Applies `@electron/fuses` and writes the asar integrity resource.
+   - The pinned `app-builder-lib` patch retries only transient Windows `EPERM`, `EACCES`,
+     or `EBUSY` directory renames after extraction (up to seven retries with bounded
+     backoff); every other filesystem error still aborts immediately.
 3. **Artifact verification** `scripts/verify-win-installer.ts`: checks the Windows PE
    header (MZ magic + PE signature) of the installer and the unpacked executable, then
    prints `Windows installer verification passed: ...`.
