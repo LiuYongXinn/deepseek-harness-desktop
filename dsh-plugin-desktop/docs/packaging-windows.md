@@ -135,7 +135,7 @@ Trust `$LASTEXITCODE` and the artifact files, not the wrapped pipeline exit code
 
 ### 4.5 Submodule vs. packaging
 `deepseek-harness/` is a pinned upstream submodule and is **not built during packaging**;
-all `@deepseek-ai/*` dependencies come from the npm registry (`0.1.0-rc.6` family). Only
+all `@deepseek-ai/*` dependencies come from the npm registry (`0.1.0-rc.8` family). Only
 upstream development (`upstream:install` / `upstream:build`) enters that submodule and
 uses its own pnpm workspace.
 

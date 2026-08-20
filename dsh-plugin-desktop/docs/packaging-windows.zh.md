@@ -124,7 +124,7 @@ corepack yarn dist:win *> "$env:TEMP\dsh-dist-win.log"; $LASTEXITCODE
 
 ### 4.5 子模块与打包的关系
 `deepseek-harness/` 为 pinned upstream submodule，**打包流程不构建它**；桌面包的
-`@deepseek-ai/*` 依赖全部来自 npm registry（`0.1.0-rc.6` 家族）。仅当需要
+`@deepseek-ai/*` 依赖全部来自 npm registry（`0.1.0-rc.8` 家族）。仅当需要
 `upstream:install`/`upstream:build`（上游开发）时才进入子模块使用其 pnpm workspace。
 
 ### 4.6 升级检测机制：新版安装包能否识别旧安装并覆盖升级？——能
